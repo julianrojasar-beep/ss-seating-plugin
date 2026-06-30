@@ -100,7 +100,7 @@ class SS_Ticket_Form {
         $layout_raw = SS_Event_Service::instance()->get_layout_raw( $event_id );
         $layout_decoded = is_string( $layout_raw ) ? json_decode( $layout_raw, true ) : null;
 
-        if ( is_array( $layout_decoded ) && ! empty( $layout_decoded['rows'] )
+        if ( is_array( $layout_decoded ) && ! empty( ss_layout_get_rows( $layout_decoded ) )
              && in_array( $sale_mode, array( 'seat', 'hybrid', 'general' ), true ) ) {
 
             $renderer_ver = filemtime( $plugin_path . 'assets/js/ss-konva-renderer.js' ) ?: '1.1.0';

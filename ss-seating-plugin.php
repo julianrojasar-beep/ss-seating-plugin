@@ -812,6 +812,23 @@ function ss_sync_zones_to_ticket_types_on_save($post_id, $post) {
     ss_sync_zones_to_ticket_types($post_id);
 }
 
+/**
+ * Normaliza el layout JSON a un array plano de filas.
+ * Soporta tanto el formato legacy { rows: [] } como el nuevo { floors: [{ rows: [] }] }.
+ */
+function ss_layout_get_rows( array $layout ): array {
+    if ( ! empty( $layout['floors'] ) && is_array( $layout['floors'] ) ) {
+        $all_rows = array();
+        foreach ( $layout['floors'] as $floor ) {
+            if ( ! empty( $floor['rows'] ) && is_array( $floor['rows'] ) ) {
+                $all_rows = array_merge( $all_rows, $floor['rows'] );
+            }
+        }
+        return $all_rows;
+    }
+    return isset( $layout['rows'] ) && is_array( $layout['rows'] ) ? $layout['rows'] : array();
+}
+
 function ss_sync_zones_to_ticket_types($post_id) {
     $layout_raw = SS_Event_Service::instance()->get_layout_raw($post_id);
     if (empty($layout_raw)) {
@@ -819,13 +836,14 @@ function ss_sync_zones_to_ticket_types($post_id) {
     }
 
     $layout = json_decode($layout_raw, true);
-    if (!is_array($layout) || empty($layout['rows'])) {
+    $rows = ss_layout_get_rows( $layout ?: array() );
+    if (!is_array($layout) || empty($rows)) {
         return;
     }
 
     // 2) Count seats per zone
     $zone_counts = array();
-    foreach ($layout['rows'] as $row) {
+    foreach ($rows as $row) {
         // Skip empty spacer rows
         if (isset($row['type']) && $row['type'] === 'empty') {
             continue;
@@ -1552,7 +1570,8 @@ function ss_seating_require_seats_validation($passed, $product_id, $quantity) {
     }
 
     $layout = json_decode($layout_raw, true);
-    if (!is_array($layout) || empty($layout['rows'])) {
+    $rows = ss_layout_get_rows( $layout ?: array() );
+    if (!is_array($layout) || empty($rows)) {
         return $passed;
     }
 
@@ -4920,11 +4939,12 @@ function ss_seats_zone_map( int $event_id ): array {
         return array();
     }
     $layout = json_decode( $layout_raw, true );
-    if ( ! is_array( $layout ) || empty( $layout['rows'] ) ) {
+    $rows = ss_layout_get_rows( $layout ?: array() );
+    if ( ! is_array( $layout ) || empty( $rows ) ) {
         return array();
     }
     $map = array();
-    foreach ( $layout['rows'] as $row ) {
+    foreach ( $rows as $row ) {
         if ( isset( $row['type'] ) && $row['type'] === 'empty' ) {
             continue;
         }
@@ -5347,7 +5367,8 @@ function ss_get_zone_inventory( int $event_id ): array {
         return array();
     }
     $layout = json_decode( $layout_raw, true );
-    if ( ! is_array( $layout ) || empty( $layout['rows'] ) ) {
+    $rows = ss_layout_get_rows( $layout ?: array() );
+    if ( ! is_array( $layout ) || empty( $rows ) ) {
         return array();
     }
 
@@ -5355,7 +5376,7 @@ function ss_get_zone_inventory( int $event_id ): array {
     $zone_totals  = array();
     $seat_to_zone = array();
 
-    foreach ( $layout['rows'] as $row ) {
+    foreach ( $rows as $row ) {
         if ( isset( $row['type'] ) && $row['type'] === 'empty' ) {
             continue;
         }
@@ -5605,12 +5626,13 @@ function ss_get_event_seating_stats( int $event_id ): array {
         return $stats;
     }
     $layout = json_decode( $layout_raw, true );
-    if ( ! is_array( $layout ) || empty( $layout['rows'] ) ) {
+    $rows = ss_layout_get_rows( $layout ?: array() );
+    if ( ! is_array( $layout ) || empty( $rows ) ) {
         return $stats;
     }
 
     $total = 0;
-    foreach ( $layout['rows'] as $row ) {
+    foreach ( $rows as $row ) {
         if ( isset( $row['type'] ) && $row['type'] === 'empty' ) {
             continue;
         }
