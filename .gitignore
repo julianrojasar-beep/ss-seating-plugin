@@ -27,3 +27,6 @@ wp-content/uploads/ss-qrs/
 
 # Zip de distribución (GitHub genera el suyo automáticamente)
 *.zip
+
+# Notas internas de desarrollo (no son parte del plugin)
+REFACTOR-NOTES.md
