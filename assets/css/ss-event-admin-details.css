@@ -1,0 +1,100 @@
+/* SS Event Details Metabox — Admin styles */
+
+.ss-details-metabox__section {
+    margin-bottom: 20px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid #dcdcde;
+}
+
+.ss-details-metabox__section:last-child {
+    border-bottom: none;
+    margin-bottom: 0;
+    padding-bottom: 0;
+}
+
+.ss-details-metabox__section h4 {
+    margin: 0 0 10px;
+    font-size: 14px;
+}
+
+/* Row for side-by-side fields (start / end) */
+.ss-details-metabox__row {
+    display: flex;
+    gap: 16px;
+}
+
+.ss-details-metabox__row .ss-details-metabox__field {
+    flex: 1;
+}
+
+/* Single field */
+.ss-details-metabox__field {
+    margin-bottom: 12px;
+}
+
+.ss-details-metabox__field:last-child {
+    margin-bottom: 0;
+}
+
+.ss-details-metabox__field label {
+    display: block;
+    margin-bottom: 4px;
+    font-weight: 600;
+    font-size: 13px;
+    color: #1d2327;
+}
+
+.ss-details-metabox__field input[type="text"],
+.ss-details-metabox__field input[type="datetime-local"] {
+    width: 100%;
+    max-width: 400px;
+}
+
+/* Radio group */
+.ss-details-metabox__radio-group {
+    display: flex;
+    gap: 20px;
+}
+
+.ss-details-metabox__radio-group label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+/* Location grid: 2 columns for city/state/country/postcode */
+.ss-details-metabox__location .ss-details-metabox__field {
+    display: inline-block;
+    vertical-align: top;
+}
+
+/* Venue and street take full width */
+.ss-details-metabox__location .ss-details-metabox__field:nth-child(2),
+.ss-details-metabox__location .ss-details-metabox__field:nth-child(3) {
+    width: 100%;
+}
+
+/* City, state, country, postcode in 2-col grid */
+.ss-details-metabox__location .ss-details-metabox__field:nth-child(n+4) {
+    width: calc(50% - 8px);
+    margin-right: 16px;
+}
+
+.ss-details-metabox__location .ss-details-metabox__field:nth-child(2n+1):nth-child(n+4) {
+    margin-right: 0;
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+    .ss-details-metabox__row {
+        flex-direction: column;
+        gap: 12px;
+    }
+
+    .ss-details-metabox__location .ss-details-metabox__field:nth-child(n+4) {
+        width: 100%;
+        margin-right: 0;
+    }
+}

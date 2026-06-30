@@ -1,0 +1,906 @@
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * SS Event Page — Dark premium ticketing theme
+ * All selectors namespaced under .tk-root to prevent theme conflicts
+ * Layout: Hero → Thumbnails → CSS Grid (seat-map-wrapper | sidebar)
+ * ═══════════════════════════════════════════════════════════════════════════════ */
+
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=DM+Sans:wght@300;400;500;600;700&display=swap');
+
+/* ── Loader ─────────────────────────────────────────────────────────────── */
+.tk-loader {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 60vh;
+}
+.tk-loader__spinner {
+    width: 36px;
+    height: 36px;
+    border: 3px solid rgba(var(--ss-primary-rgb, 124,58,237), 0.15);
+    border-top-color: var(--ss-primary, #7c3aed);
+    border-radius: 50%;
+    animation: ss-spin .7s linear infinite;
+}
+@keyframes ss-spin { to { transform: rotate(360deg); } }
+
+/* ── Force dark bg on WordPress theme wrappers for ss_event ──────────────── */
+.single-ss_event .entry-title,
+.single-ss_event .page-title,
+.single-ss_event .post-title,
+.single-ss_event article > header {
+    display: none !important;
+}
+
+body.single-ss_event {
+    background: #0a0a0f !important;
+}
+
+body.single-ss_event .site-content,
+body.single-ss_event .entry-content,
+body.single-ss_event .post-content,
+body.single-ss_event article,
+body.single-ss_event main,
+body.single-ss_event #primary,
+body.single-ss_event #content,
+body.single-ss_event .content-area,
+body.single-ss_event .container,
+body.single-ss_event .wrapper,
+body.single-ss_event .page-content,
+body.single-ss_event .ast-container,
+body.single-ss_event .fl-content,
+body.single-ss_event .elementor-section-wrap,
+body.single-ss_event .wp-block-group__inner-container,
+body.single-ss_event .tutor-container,
+body.single-ss_event .tutor-wrap,
+body.single-ss_event .tutor-page-wrap,
+body.single-ss_event .starter-starter-content,
+body.single-ss_event [class*="tutor-"] {
+    max-width: none !important;
+    width: 100% !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+    margin-left: auto !important;
+    margin-right: auto !important;
+    background: #0a0a0f !important;
+    float: none !important;
+    overflow: visible !important;
+}
+
+/* ═══ ROOT ═══════════════════════════════════════════════════════════════════ */
+.tk-root {
+    --tk-bg: #0a0a0f;
+    --tk-bg-card: #0f0f18;
+    --tk-bg-hover: rgba(255, 255, 255, 0.03);
+    --tk-border: rgba(255, 255, 255, 0.08);
+    --tk-border-light: rgba(255, 255, 255, 0.06);
+    --tk-text: #f0ede8;
+    --tk-text-muted: rgba(255, 255, 255, 0.45);
+    --tk-text-dim: rgba(255, 255, 255, 0.3);
+    --tk-accent: var(--ss-primary-light, #a855f7);
+    --tk-accent-dim: rgba(var(--ss-primary-rgb, 120,60,255), 0.25);
+    --tk-accent-glow: rgba(var(--ss-primary-rgb, 120,60,255), 0.4);
+    --tk-accent-text: var(--ss-primary-light, #c4a8ff);
+    --tk-vip: #f59e0b;
+    --tk-vip-dim: rgba(245, 158, 11, 0.15);
+    --tk-radius: 8px;
+    --tk-radius-lg: 12px;
+    --tk-radius-xl: 16px;
+    --tk-ease: cubic-bezier(0.4, 0, 0.2, 1);
+    --tk-max-width: 1100px;
+
+    font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: var(--tk-text);
+    background: var(--tk-bg);
+    line-height: 1.6;
+    /* Sin max-width aquí — el hero es full-width, los internos se limitan solos */
+    margin: 0 auto;
+    padding-bottom: 3rem;
+    -webkit-font-smoothing: antialiased;
+}
+
+.tk-root *,
+.tk-root *::before,
+.tk-root *::after {
+    box-sizing: border-box;
+}
+
+/* ═══ HERO ════════════════════════════════════════════════════════════════════ */
+.tk-root .hero {
+    position: relative;
+    max-width: 1200px;
+    margin: 1rem auto 0;
+    padding: 0 3rem;
+    overflow: hidden;
+}
+
+.tk-root .hero__image {
+    width: 100%;
+    display: block;
+    border-radius: var(--tk-radius-xl);
+    transition: opacity 0.4s ease;
+}
+
+.tk-root .hero__overlay {
+    position: absolute;
+    inset: 0;
+    border-radius: var(--tk-radius-xl);
+    background: linear-gradient(
+        to top,
+        rgba(10, 10, 15, 0.85) 0%,
+        rgba(10, 10, 15, 0.3) 35%,
+        transparent 60%
+    );
+    display: flex;
+    align-items: flex-end;
+}
+
+.tk-root .hero--no-image {
+    background: linear-gradient(135deg, #0d0820 0%, #1a0a2e 40%, #0a1628 100%);
+    display: flex;
+    align-items: flex-end;
+    width: 100%;
+    min-height: 340px;
+}
+
+.tk-root .hero__bg-art {
+    position: absolute;
+    inset: 0;
+    background:
+        radial-gradient(ellipse 60% 80% at 70% 50%, rgba(120, 60, 255, 0.25) 0%, transparent 70%),
+        radial-gradient(ellipse 40% 60% at 20% 30%, rgba(255, 80, 120, 0.15) 0%, transparent 60%);
+}
+
+.tk-root .hero__stars {
+    position: absolute;
+    inset: 0;
+    background-image:
+        radial-gradient(1px 1px at 15% 25%, rgba(255,255,255,0.6) 0%, transparent 0%),
+        radial-gradient(1px 1px at 85% 15%, rgba(255,255,255,0.4) 0%, transparent 0%),
+        radial-gradient(1.5px 1.5px at 45% 70%, rgba(255,255,255,0.5) 0%, transparent 0%),
+        radial-gradient(1px 1px at 70% 85%, rgba(255,255,255,0.3) 0%, transparent 0%),
+        radial-gradient(1px 1px at 30% 55%, rgba(255,255,255,0.4) 0%, transparent 0%),
+        radial-gradient(1px 1px at 90% 60%, rgba(255,255,255,0.3) 0%, transparent 0%),
+        radial-gradient(1px 1px at 10% 80%, rgba(255,255,255,0.5) 0%, transparent 0%);
+}
+
+.tk-root .hero__grid-lines {
+    position: absolute;
+    inset: 0;
+    background-image:
+        linear-gradient(rgba(120, 60, 255, 0.06) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(120, 60, 255, 0.06) 1px, transparent 1px);
+    background-size: 40px 40px;
+}
+
+.tk-root .hero__content {
+    position: relative;
+    z-index: 2;
+    padding: 2rem 2.5rem;
+    width: 100%;
+    max-width: var(--tk-max-width);
+    margin: 0 auto;
+}
+
+.tk-root .hero__badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--tk-accent-dim);
+    border: 0.5px solid rgba(120, 60, 255, 0.5);
+    color: var(--tk-accent-text);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    padding: 4px 12px;
+    border-radius: 20px;
+    width: fit-content;
+    margin-bottom: 14px;
+    font-weight: 500;
+}
+
+.tk-root .hero__badge::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--tk-accent);
+    display: block;
+}
+
+.tk-root .hero__badge--sold-out {
+    background: rgba(239, 83, 80, 0.15);
+    border-color: rgba(239, 83, 80, 0.5);
+    color: #ef5350;
+}
+.tk-root .hero__badge--sold-out::before {
+    background: #ef5350;
+}
+
+.tk-root .hero__title {
+    font-family: 'Playfair Display', Georgia, serif;
+    font-size: 48px;
+    font-weight: 900;
+    line-height: 1;
+    background: linear-gradient(135deg, #ffffff 0%, #e0ccff 60%, #f9a8d4 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin: 0 0 12px;
+}
+
+.tk-root .hero__meta {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+    font-size: 13px;
+    color: var(--tk-text-muted);
+}
+
+.tk-root .hero__meta-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.tk-root .hero__meta-item svg {
+    opacity: 0.7;
+    flex-shrink: 0;
+}
+
+/* ── Hero dots ────────────────────────────────────────────────────────────── */
+.tk-root .hero__dots {
+    position: absolute;
+    bottom: 1.25rem;
+    right: 1.5rem;
+    display: flex;
+    gap: 8px;
+    z-index: 3;
+}
+
+.tk-root .hero__dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(255, 255, 255, 0.35);
+    cursor: pointer;
+    padding: 0;
+    transition: all 0.25s var(--tk-ease);
+}
+
+.tk-root .hero__dot.active {
+    background: #fff;
+    transform: scale(1.3);
+}
+
+.tk-root .hero__dot:hover:not(.active) {
+    background: rgba(255, 255, 255, 0.6);
+}
+
+/* ═══ THUMBNAILS ═════════════════════════════════════════════════════════════ */
+.tk-root .thumb-row {
+    display: flex;
+    gap: 10px;
+    padding: 1.25rem 3rem;
+    background: var(--tk-bg-card);
+    border-bottom: 0.5px solid var(--tk-border);
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+.tk-root .thumb-row::-webkit-scrollbar {
+    height: 4px;
+}
+
+.tk-root .thumb-row::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 2px;
+}
+
+.tk-root .thumb {
+    flex: 0 0 auto;
+    width: 80px;
+    height: 54px;
+    border-radius: 8px;
+    overflow: hidden;
+    cursor: pointer;
+    border: 2px solid transparent;
+    background: none;
+    padding: 0;
+    transition: border-color 0.2s var(--tk-ease), box-shadow 0.2s var(--tk-ease), transform 0.2s var(--tk-ease);
+    display: block;
+}
+
+.tk-root .thumb:hover {
+    border-color: rgba(var(--ss-primary-rgb, 124,58,237), 0.5);
+    transform: scale(1.05);
+}
+
+.tk-root .thumb.active {
+    border-color: var(--ss-primary, var(--tk-accent));
+    box-shadow: 0 0 0 3px rgba(var(--ss-primary-rgb, 124,58,237), 0.12);
+}
+
+.tk-root .thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+/* ═══ MAIN LAYOUT — CSS Grid 1fr 340px ═══════════════════════════════════════ */
+.tk-root .main-layout {
+    display: grid !important;
+    grid-template-columns: 1fr 360px !important;
+    gap: 2rem;
+    padding: 2rem 3rem;
+    max-width: 1200px;
+    margin: 0 auto;
+    align-items: start;
+    width: 100%;
+}
+
+/* ── Section label ───────────────────────────────────────────────────────── */
+.tk-root .section-label {
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--tk-text-dim);
+    margin: 0 0 16px;
+    font-weight: 500;
+}
+
+/* ═══ SEAT MAP (left column) ═════════════════════════════════════════════════ */
+.tk-root .seat-map-wrapper {
+    min-width: 0;
+}
+
+.tk-root .seat-map-container {
+    background: var(--tk-bg-card);
+    border: 0.5px solid var(--tk-border);
+    border-radius: var(--tk-radius-xl);
+    padding: 1.5rem;
+    overflow: hidden;
+}
+
+.tk-root .seat-map-container #ss-konva-container {
+    width: 100%;
+    min-height: 600px;
+}
+
+/* ── Legend (inside map container) ───────────────────────────────────────── */
+.tk-root .legend {
+    display: flex;
+    gap: 16px;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin-top: 1.25rem;
+    padding-top: 1rem;
+    border-top: 0.5px solid var(--tk-border);
+}
+
+.tk-root .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--tk-text-muted);
+}
+
+.tk-root .legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+    flex-shrink: 0;
+    border: 0.5px solid rgba(255, 255, 255, 0.15);
+}
+
+/* ── Description ─────────────────────────────────────────────────────────── */
+.tk-root .description-block {
+    margin-bottom: 2rem;
+}
+
+.tk-root .description-block__body {
+    background: var(--tk-bg-card);
+    border: 0.5px solid var(--tk-border);
+    border-radius: 14px;
+    padding: 1.5rem;
+    font-size: 14px;
+    line-height: 1.8;
+    color: rgba(255, 255, 255, 0.55);
+}
+
+.tk-root .description-block__body p {
+    margin: 0 0 10px;
+}
+
+.tk-root .description-block__body p:last-child {
+    margin-bottom: 0;
+}
+
+/* ═══ SIDEBAR (right column, sticky) ═════════════════════════════════════════ */
+.tk-root .sidebar {
+    position: sticky;
+    top: 1rem;
+    min-width: 0;
+}
+
+.tk-root .event-card {
+    background: var(--tk-bg-card);
+    border: 0.5px solid var(--tk-border);
+    border-radius: var(--tk-radius-xl);
+    overflow: hidden;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+}
+
+/* Card header */
+.tk-root .event-card__header {
+    padding: 1.25rem 1.25rem 1rem;
+    border-bottom: 0.5px solid var(--tk-border-light);
+    background: linear-gradient(135deg, rgba(120, 60, 255, 0.08), rgba(120, 60, 255, 0.03));
+}
+
+.tk-root .event-card__title {
+    font-family: 'Playfair Display', Georgia, serif;
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--tk-text);
+    margin: 0;
+    line-height: 1.2;
+}
+
+/* Card details */
+.tk-root .event-card__details {
+    padding: 1rem 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    border-bottom: 0.5px solid var(--tk-border-light);
+}
+
+.tk-root .event-card__detail-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--tk-text-muted);
+}
+
+.tk-root .event-card__detail-row svg {
+    flex-shrink: 0;
+    color: var(--tk-accent);
+}
+
+.tk-root .event-card__detail-row span {
+    min-width: 0;
+    line-height: 1.4;
+}
+
+/* ── Ticket types ────────────────────────────────────────────────────────── */
+.tk-root .ticket-section {
+    padding: 1.25rem;
+    border-bottom: 0.5px solid var(--tk-border-light);
+}
+
+.tk-root .ticket-section__title {
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--tk-text-dim);
+    margin: 0 0 1rem;
+    font-weight: 500;
+}
+
+.tk-root .ticket-type {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    border-radius: 10px;
+    margin-bottom: 8px;
+    border: 0.5px solid var(--tk-border);
+    background: var(--tk-bg-hover);
+    transition: border-color 0.2s var(--tk-ease), background 0.2s var(--tk-ease);
+    gap: 8px;
+}
+
+.tk-root .ticket-type:last-child {
+    margin-bottom: 0;
+}
+
+.tk-root .ticket-type:hover {
+    border-color: rgba(120, 60, 255, 0.25);
+}
+
+.tk-root .ticket-type__info {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+}
+
+.tk-root .ticket-type__name {
+    font-size: 13px;
+    font-weight: 500;
+    color: rgba(255, 255, 255, 0.8);
+}
+
+.tk-root .ticket-type__avail {
+    font-size: 11px;
+    color: var(--tk-text-dim);
+}
+.tk-root .ticket-type__avail--sold-out {
+    color: #ef5350;
+    font-weight: 600;
+}
+.tk-root .ticket-type--sold-out {
+    opacity: 0.5;
+}
+.tk-root .qty-control--disabled {
+    opacity: 0.3;
+    pointer-events: none;
+}
+
+.tk-root .ticket-type__right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+}
+
+.tk-root .ticket-type__price {
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--tk-text);
+    white-space: nowrap;
+}
+
+/* WooCommerce price overrides inside dark theme */
+.tk-root .ticket-type__price .woocommerce-Price-amount {
+    color: var(--tk-text) !important;
+}
+
+.tk-root .ticket-type__price .woocommerce-Price-currencySymbol {
+    color: var(--tk-text) !important;
+}
+
+.tk-root .ticket-type__note {
+    font-size: 11px;
+    color: var(--tk-text-dim);
+    font-style: italic;
+}
+
+/* Qty controls */
+.tk-root .qty-control {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.tk-root .qty-btn {
+    width: 28px;
+    height: 28px;
+    border-radius: 7px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.05);
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 16px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s var(--tk-ease);
+    line-height: 1;
+    padding: 0;
+}
+
+.tk-root .qty-btn:hover {
+    background: rgba(120, 60, 255, 0.2);
+    border-color: rgba(196, 168, 255, 0.5);
+    color: var(--tk-accent-text);
+}
+
+.tk-root .ss-qty-input {
+    width: 32px;
+    font-size: 14px;
+    font-weight: 500;
+    text-align: center;
+    color: var(--tk-text);
+    background: transparent;
+    border: none;
+    padding: 0;
+    -moz-appearance: textfield;
+    font-family: 'DM Sans', sans-serif;
+}
+
+.tk-root .ss-qty-input::-webkit-outer-spin-button,
+.tk-root .ss-qty-input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+/* ── Summary ─────────────────────────────────────────────────────────────── */
+.tk-root .summary-section {
+    padding: 1rem 1.25rem;
+    border-bottom: 0.5px solid var(--tk-border-light);
+}
+
+.tk-root .summary-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+    color: var(--tk-text-muted);
+    margin-bottom: 6px;
+}
+
+.tk-root .summary-items {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.tk-root .ss-ticket-form__summary-item {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+    color: var(--tk-text-muted);
+}
+
+.tk-root .summary-total {
+    display: flex;
+    justify-content: space-between;
+    font-size: 16px;
+    font-weight: 500;
+    color: var(--tk-text);
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 0.5px solid var(--tk-border);
+}
+
+/* ── CTA ─────────────────────────────────────────────────────────────────── */
+.tk-root .cta-section {
+    padding: 1rem 1.25rem 1.25rem;
+}
+
+.tk-root .ss-ticket-form__buy-btn {
+    width: 100%;
+    padding: 14px;
+    border-radius: var(--tk-radius-lg);
+    border: none;
+    background: linear-gradient(135deg, var(--ss-primary, #6d28d9), var(--ss-primary-light, #7c3aed));
+    color: #fff;
+    font-size: 14px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    transition: all 0.2s var(--tk-ease);
+    font-family: 'DM Sans', sans-serif;
+    text-align: center;
+    line-height: 1.4;
+    display: block;
+}
+
+.tk-root .ss-ticket-form__buy-btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 24px var(--tk-accent-glow);
+}
+
+.tk-root .ss-ticket-form__buy-btn:active:not(:disabled) {
+    transform: scale(0.98);
+}
+
+.tk-root .ss-ticket-form__buy-btn:disabled {
+    background: rgba(255, 255, 255, 0.06);
+    color: rgba(255, 255, 255, 0.25);
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+    opacity: 1;
+}
+.tk-root .ss-ticket-form__buy-btn--sold-out {
+    background: rgba(239, 83, 80, 0.12) !important;
+    color: #ef5350 !important;
+    border: 1px solid rgba(239, 83, 80, 0.3);
+    font-size: 16px;
+    letter-spacing: 0.05em;
+}
+
+.tk-root .cta-section__hint {
+    font-size: 11px;
+    color: var(--tk-text-dim);
+    text-align: center;
+    margin: 8px 0 0;
+}
+
+.tk-root .cta-section__no-product {
+    color: #f87171;
+    font-size: 13px;
+    text-align: center;
+    margin: 0;
+}
+
+/* Hidden inputs */
+.tk-root input[type="hidden"] {
+    display: none;
+}
+
+/* ═══ LIGHTBOX ═══════════════════════════════════════════════════════════════ */
+.tk-root .lightbox {
+    position: fixed;
+    inset: 0;
+    z-index: 999999;
+    background: rgba(0, 0, 0, 0.92);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    cursor: zoom-out;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.25s, visibility 0.25s;
+}
+
+.tk-root .lightbox.ss-active {
+    opacity: 1;
+    visibility: visible;
+}
+
+.tk-root .lightbox img {
+    max-width: 90vw;
+    max-height: 90vh;
+    object-fit: contain;
+    border-radius: var(--tk-radius);
+    cursor: default;
+}
+
+.tk-root .lightbox__close {
+    position: absolute;
+    top: 16px;
+    right: 20px;
+    width: 40px;
+    height: 40px;
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    border: none;
+    border-radius: 50%;
+    font-size: 24px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s;
+}
+
+.tk-root .lightbox__close:hover {
+    background: rgba(255, 255, 255, 0.25);
+}
+
+/* ═══ RESPONSIVE ═════════════════════════════════════════════════════════════ */
+
+@media (max-width: 700px) {
+    .tk-root .main-layout {
+        grid-template-columns: 1fr !important;
+        padding: 1.5rem;
+    }
+
+    /* Mobile order: map → purchase → description */
+    .tk-root .seat-map-wrapper {
+        order: 1;
+    }
+
+    .tk-root .sidebar {
+        position: static;
+        order: 2;
+    }
+
+    .tk-root .description-block {
+        order: 3;
+    }
+
+    .tk-root .hero {
+        margin-top: 0.5rem;
+        padding: 0 1.5rem;
+    }
+
+    .tk-root .hero__title {
+        font-size: 32px;
+    }
+
+    .tk-root .hero__content {
+        padding: 1.5rem;
+    }
+
+    .tk-root .thumb-row {
+        padding: 1rem 1.5rem;
+    }
+}
+
+@media (max-width: 480px) {
+    .tk-root .main-layout {
+        padding: 1rem;
+        gap: 1.25rem;
+    }
+
+    .tk-root .hero {
+        padding: 0 1rem;
+    }
+
+    .tk-root .hero__title {
+        font-size: 28px;
+    }
+
+    .tk-root .hero__content {
+        padding: 1rem 1.25rem;
+    }
+
+    .tk-root .hero__badge {
+        font-size: 10px;
+        padding: 3px 10px;
+        margin-bottom: 10px;
+    }
+
+    .tk-root .hero__meta {
+        flex-direction: column;
+        gap: 6px;
+        font-size: 12px;
+    }
+
+    .tk-root .thumb-row {
+        padding: 0.75rem 1rem;
+        gap: 8px;
+    }
+
+    .tk-root .thumb {
+        width: 60px;
+        height: 40px;
+    }
+
+    .tk-root .seat-map-container {
+        padding: 1rem;
+        border-radius: var(--tk-radius-lg);
+    }
+
+    .tk-root .seat-map-container #ss-konva-container {
+        min-height: 400px;
+    }
+
+    .tk-root .legend {
+        gap: 10px;
+    }
+
+    .tk-root .event-card {
+        border-radius: var(--tk-radius-lg);
+    }
+
+    .tk-root .event-card__header {
+        padding: 1rem 1rem 0.75rem;
+    }
+
+    .tk-root .event-card__details {
+        padding: 0.75rem 1rem;
+    }
+
+    .tk-root .ticket-section {
+        padding: 1rem;
+    }
+
+    .tk-root .ticket-type {
+        padding: 8px 10px;
+        flex-wrap: wrap;
+    }
+
+    .tk-root .summary-section {
+        padding: 0.75rem 1rem;
+    }
+
+    .tk-root .cta-section {
+        padding: 0.75rem 1rem 1rem;
+    }
+
+    .tk-root .description-block__body {
+        padding: 1rem;
+        border-radius: var(--tk-radius-lg);
+    }
+}

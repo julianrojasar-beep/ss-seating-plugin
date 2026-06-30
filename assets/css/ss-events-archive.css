@@ -1,0 +1,272 @@
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * SS Events Archive — Dark premium listing
+ * ═══════════════════════════════════════════════════════════════════════════════ */
+
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=DM+Sans:wght@300;400;500;600;700&display=swap');
+
+.ss-events-archive {
+    background: #0a0a0f;
+    color: #f0ede8;
+    font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    padding: 3rem 2rem 4rem;
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+/* ── Section title ────────────────────────────────────────────────────────── */
+
+.ss-events-section {
+    margin-bottom: 3rem;
+}
+
+.ss-events-section__title {
+    font-family: 'Playfair Display', serif;
+    font-size: clamp(1.5rem, 3vw, 2rem);
+    font-weight: 700;
+    text-align: center;
+    margin: 0 0 0.5rem;
+    color: #f0ede8;
+}
+
+.ss-events-section__line {
+    width: 50px;
+    height: 3px;
+    background: var(--ss-primary, #6d28d9);
+    margin: 0 auto 2rem;
+    border-radius: 2px;
+}
+
+/* ── Grid ─────────────────────────────────────────────────────────────────── */
+
+.ss-events-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 1.5rem;
+}
+
+/* ── Card ─────────────────────────────────────────────────────────────────── */
+
+.ss-event-card {
+    background: #0f0f18;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 14px;
+    overflow: hidden;
+    transition: transform 0.25s ease, box-shadow 0.25s ease;
+    display: flex;
+    flex-direction: column;
+}
+
+.ss-event-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+}
+
+/* Card image */
+.ss-event-card__image {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    object-fit: cover;
+    display: block;
+}
+
+.ss-event-card__image-placeholder {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    background: linear-gradient(135deg, #1a1a2e, #16213e);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 2.5rem;
+    color: rgba(255, 255, 255, 0.15);
+}
+
+/* Card body */
+.ss-event-card__body {
+    padding: 1.25rem 1.5rem 1.5rem;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+
+.ss-event-card__title {
+    font-family: 'Playfair Display', serif;
+    font-size: 1.15rem;
+    font-weight: 700;
+    margin: 0 0 0.6rem;
+    line-height: 1.3;
+    color: #f0ede8;
+}
+
+/* Meta row */
+.ss-event-card__meta {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    margin-bottom: 0.8rem;
+    font-size: 0.82rem;
+    color: rgba(255, 255, 255, 0.5);
+}
+
+.ss-event-card__meta-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.ss-event-card__meta-row svg {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    opacity: 0.6;
+}
+
+/* Description */
+.ss-event-card__desc {
+    font-size: 0.85rem;
+    line-height: 1.6;
+    color: rgba(255, 255, 255, 0.55);
+    margin: 0 0 1rem;
+    flex: 1;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+/* Badges de descuento */
+.ss-event-card__badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 0.6rem;
+}
+
+.ss-event-card__badge {
+    display: inline-flex;
+    align-items: center;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 6px;
+    border: 1px solid rgba(var(--ss-primary-rgb, 109,40,217), 0.5);
+    background: rgba(var(--ss-primary-rgb, 109,40,217), 0.12);
+    color: var(--ss-primary-light, #a855f7);
+}
+
+.ss-event-card__badge--loyalty {
+    border-color: rgba(168, 85, 247, 0.4);
+    background: rgba(168, 85, 247, 0.1);
+    color: #c084fc;
+}
+
+/* CTA button */
+.ss-event-card__cta {
+    display: inline-block;
+    width: 100%;
+    padding: 11px 16px;
+    border-radius: 10px;
+    border: none;
+    background: linear-gradient(135deg, var(--ss-primary, #6d28d9), var(--ss-primary-light, #7c3aed));
+    color: #fff;
+    font-size: 0.85rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-align: center;
+    text-decoration: none;
+    cursor: pointer;
+    transition: box-shadow 0.25s ease, transform 0.15s ease;
+}
+
+.ss-event-card__cta:hover {
+    box-shadow: 0 6px 20px rgba(var(--ss-primary-rgb, 109,40,217), 0.4);
+    transform: translateY(-1px);
+    color: #fff;
+    text-decoration: none;
+}
+
+/* ── Past events ──────────────────────────────────────────────────────────── */
+
+.ss-events-section--past .ss-event-card {
+    opacity: 0.55;
+    filter: grayscale(0.3);
+    transition: opacity 0.25s ease, filter 0.25s ease, transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+.ss-events-section--past .ss-event-card:hover {
+    opacity: 0.8;
+    filter: grayscale(0);
+}
+
+.ss-events-section--past .ss-event-card__cta {
+    background: rgba(255, 255, 255, 0.08);
+    cursor: default;
+    pointer-events: none;
+}
+
+/* ── Sold out badge ───────────────────────────────────────────────────────── */
+
+.ss-event-card__image-wrap {
+    position: relative;
+}
+
+.ss-event-card__sold-out {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    background: #dc2626;
+    color: #fff;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 4px 10px;
+    border-radius: 6px;
+}
+
+/* ── Empty state ──────────────────────────────────────────────────────────── */
+
+.ss-events-empty {
+    text-align: center;
+    color: rgba(255, 255, 255, 0.4);
+    font-size: 1rem;
+    padding: 4rem 0;
+}
+
+/* ── Responsive ───────────────────────────────────────────────────────────── */
+
+@media (max-width: 700px) {
+    .ss-events-archive {
+        padding: 2rem 1rem 3rem;
+    }
+    .ss-events-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* ── Force dark on body + all theme wrappers ──────────────────────────────── */
+/* body.ss-events-page is added via body_class filter in ss-seating-plugin.php */
+body.ss-events-page {
+    background: #0a0a0f !important;
+}
+
+body.ss-events-page .site-content,
+body.ss-events-page .entry-content,
+body.ss-events-page .content-area,
+body.ss-events-page main,
+body.ss-events-page #main,
+body.ss-events-page #primary,
+body.ss-events-page #content,
+body.ss-events-page .site-main,
+body.ss-events-page article,
+body.ss-events-page .page-content,
+body.ss-events-page .ast-container,
+body.ss-events-page .ast-page-builder-template,
+body.ss-events-page .fl-content,
+body.ss-events-page .elementor-section-wrap,
+body.ss-events-page .wp-block-group__inner-container,
+body.ss-events-page .container,
+body.ss-events-page .wrapper {
+    background: #0a0a0f !important;
+}

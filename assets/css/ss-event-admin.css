@@ -1,0 +1,477 @@
+/* ═══════════════════════════════════════════════════════════
+   SS Event Admin — Tabbed metabox styles
+   ═══════════════════════════════════════════════════════════ */
+
+/* ── Tab navigation ── */
+.ss-admin-tabs__nav {
+    display: flex;
+    gap: 0;
+    border-bottom: 2px solid #c3c4c7;
+    margin: -6px -12px 0;
+    padding: 0 12px;
+    background: #f6f7f7;
+}
+
+.ss-admin-tabs__btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 10px 16px;
+    border: none;
+    background: none;
+    color: #50575e;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    transition: color 0.15s, border-color 0.15s;
+    white-space: nowrap;
+}
+
+.ss-admin-tabs__btn:hover {
+    color: #1d2327;
+}
+
+.ss-admin-tabs__btn.ss-active {
+    color: #2271b1;
+    border-bottom-color: #2271b1;
+    font-weight: 600;
+}
+
+.ss-admin-tabs__btn .dashicons {
+    font-size: 16px;
+    width: 16px;
+    height: 16px;
+    line-height: 16px;
+}
+
+/* ── Tab panels ── */
+.ss-admin-tabs__panels {
+    padding-top: 16px;
+}
+
+.ss-admin-tabs__panel {
+    display: none;
+}
+
+.ss-admin-tabs__panel.ss-active {
+    display: block;
+}
+
+/* ── Fields ── */
+.ss-admin-field {
+    margin-bottom: 16px;
+}
+
+.ss-admin-field:last-child {
+    margin-bottom: 0;
+}
+
+.ss-admin-field__label {
+    display: block;
+    font-weight: 600;
+    font-size: 13px;
+    color: #1d2327;
+    margin-bottom: 6px;
+}
+
+.ss-admin-field input[type="text"],
+.ss-admin-field input[type="number"],
+.ss-admin-field input[type="date"],
+.ss-admin-field input[type="time"] {
+    max-width: 400px;
+}
+
+/* Row for side-by-side fields */
+.ss-admin-field-row {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 16px;
+}
+
+.ss-admin-field-row > .ss-admin-field {
+    flex: 1;
+    margin-bottom: 0;
+}
+
+/* ── Hero preview ── */
+.ss-admin-hero-preview {
+    margin-bottom: 10px;
+    max-width: 400px;
+}
+
+.ss-admin-hero-preview img {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    border-radius: 4px;
+    border: 1px solid #dcdcde;
+}
+
+.ss-admin-remove-btn.hidden {
+    display: none;
+}
+
+/* ── Gallery ── */
+.ss-admin-gallery {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 10px;
+    min-height: 20px;
+}
+
+.ss-admin-gallery__item {
+    position: relative;
+    width: 100px;
+    height: 100px;
+    border-radius: 4px;
+    overflow: hidden;
+    border: 2px solid #dcdcde;
+    cursor: grab;
+    transition: border-color 0.15s, opacity 0.15s;
+}
+
+.ss-admin-gallery__item:hover {
+    border-color: #2271b1;
+}
+
+.ss-admin-gallery__item.ss-dragging {
+    opacity: 0.4;
+}
+
+.ss-admin-gallery__item.ss-drag-over {
+    border-color: #d63638;
+}
+
+.ss-admin-gallery__item img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.ss-admin-gallery__remove {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    width: 22px;
+    height: 22px;
+    background: rgba(0, 0, 0, 0.7);
+    color: #fff;
+    border: none;
+    border-radius: 50%;
+    font-size: 16px;
+    line-height: 20px;
+    text-align: center;
+    cursor: pointer;
+    padding: 0;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+
+.ss-admin-gallery__item:hover .ss-admin-gallery__remove {
+    opacity: 1;
+}
+
+.ss-admin-gallery__remove:hover {
+    background: #d63638;
+}
+
+/* ── Ticket table ── */
+.ss-admin-ticket-table {
+    width: 100%;
+    border-collapse: collapse;
+    border: 1px solid #dcdcde;
+    background: #fff;
+}
+
+.ss-admin-ticket-table th {
+    background: #f6f7f7;
+    padding: 8px 10px;
+    text-align: left;
+    font-size: 13px;
+    font-weight: 600;
+    color: #1d2327;
+    border-bottom: 1px solid #dcdcde;
+}
+
+.ss-admin-ticket-table th:last-child {
+    width: 40px;
+    text-align: center;
+}
+
+.ss-admin-ticket-table td {
+    padding: 6px 8px;
+    border-bottom: 1px solid #f0f0f1;
+    vertical-align: middle;
+}
+
+.ss-admin-ticket-table .ss-ticket-row:last-child td {
+    border-bottom: none;
+}
+
+.ss-admin-ticket-table input {
+    max-width: none !important;
+    width: 100% !important;
+}
+
+.ss-ticket-remove {
+    color: #d63638 !important;
+    border-color: #d63638 !important;
+    font-size: 16px;
+    line-height: 1;
+    padding: 2px 8px !important;
+    min-height: 28px;
+}
+
+.ss-ticket-remove:hover {
+    background: #d63638 !important;
+    color: #fff !important;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Layout Editor — Canvas + Sidebar
+   ═══════════════════════════════════════════════════════════ */
+
+.ss-layout-editor {
+    display: flex;
+    gap: 20px;
+    min-height: 0;
+}
+
+.ss-layout-canvas {
+    flex: 1;
+    min-width: 0;              /* allow flex child to shrink below content size */
+    overflow: hidden;
+}
+
+.ss-layout-canvas #container {
+    width: 100%;
+    height: 600px;
+    border: 1px solid #ddd;
+    background: #f9f9f9;
+    border-radius: 4px;
+}
+
+/* Prevent Konva canvas from overflowing */
+.ss-layout-canvas #container .konvajs-content,
+.ss-layout-canvas #container canvas {
+    width: 100% !important;
+    max-width: 100%;
+}
+
+.ss-layout-canvas__toolbar {
+    margin-top: 10px;
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.ss-layout-sidebar {
+    width: 320px;
+    flex-shrink: 0;
+}
+
+.ss-layout-sidebar__list {
+    overflow-y: auto;
+    margin-bottom: 4px;
+}
+
+/* ── Row cards ── */
+.ss-row-card {
+    border: 1px solid #e5e7eb;
+    border-radius: 4px;
+    margin-bottom: 4px;
+    background: #fff;
+    overflow: hidden;
+}
+
+.ss-row-card__head {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 6px;
+    background: #f9fafb;
+}
+
+.ss-row-card__dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    border: 1px solid rgba(0,0,0,0.15);
+}
+
+.ss-row-card__label {
+    width: 30px !important;
+    text-align: center;
+    font-weight: 600;
+    padding: 2px 4px !important;
+}
+
+.ss-row-card__count {
+    width: 45px !important;
+    text-align: center;
+    padding: 2px 4px !important;
+}
+
+.ss-row-card__range {
+    font-size: 11px;
+    color: #6b7280;
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ss-row-card__zone {
+    max-width: 85px;
+    font-size: 12px;
+    padding: 2px 4px !important;
+    height: auto !important;
+}
+
+.ss-row-card__adv-btn {
+    background: none;
+    border: 1px solid #d1d5db;
+    border-radius: 3px;
+    padding: 1px 6px;
+    cursor: pointer;
+    font-size: 12px;
+    color: #6b7280;
+    flex-shrink: 0;
+    transition: background 0.1s, color 0.1s;
+}
+
+.ss-row-card__adv-btn.open {
+    background: #eff6ff;
+    color: #2563eb;
+    border-color: #93c5fd;
+}
+
+.ss-row-card__delete {
+    background: none;
+    border: none;
+    color: #dc2626;
+    cursor: pointer;
+    font-size: 15px;
+    padding: 0 2px;
+    line-height: 1;
+    flex-shrink: 0;
+    opacity: 0.7;
+    transition: opacity 0.1s;
+}
+
+.ss-row-card__delete:hover { opacity: 1; }
+
+.ss-row-card__adv {
+    padding: 6px 8px;
+    border-top: 1px solid #e5e7eb;
+    background: #fff;
+}
+
+.ss-row-card__adv label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    margin-bottom: 5px;
+    cursor: pointer;
+    font-weight: normal;
+    color: #374151;
+}
+
+.ss-row-card__adv-field {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    margin-bottom: 5px;
+}
+
+.ss-row-card__adv-field span {
+    width: 120px;
+    color: #6b7280;
+    flex-shrink: 0;
+    font-size: 11px;
+}
+
+.ss-row-card__adv-field input {
+    flex: 1;
+    font-size: 11px !important;
+    padding: 2px 4px !important;
+}
+
+/* ── Botones globales de fila ── */
+.ss-rows-global-btn {
+    font-size: 11px !important;
+    padding: 2px 8px !important;
+    height: auto !important;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.ss-rows-global-btn.is-active {
+    background: #2271b1 !important;
+    color: #fff !important;
+    border-color: #2271b1 !important;
+}
+
+/* ── Mapa tab — override builder inline styles ── */
+.ss-admin-tabs__panel[data-tab="mapa"] hr {
+    margin: 12px 0;
+}
+
+/* ── Responsive ── */
+@media (max-width: 782px) {
+    .ss-admin-tabs__nav {
+        flex-wrap: wrap;
+    }
+
+    .ss-admin-tabs__btn {
+        padding: 8px 12px;
+        font-size: 12px;
+    }
+
+    .ss-admin-field-row {
+        flex-direction: column;
+        gap: 12px;
+    }
+
+    .ss-admin-field input[type="text"],
+    .ss-admin-field input[type="number"],
+    .ss-admin-field input[type="date"],
+    .ss-admin-field input[type="time"] {
+        max-width: none;
+        width: 100%;
+    }
+
+    .ss-layout-editor {
+        flex-direction: column;
+    }
+
+    .ss-layout-sidebar {
+        width: 100%;
+    }
+
+    .ss-layout-canvas #container {
+        height: 400px;
+    }
+}
+
+/* ── Tooltip de ayuda (?) ── */
+.ss-help {
+    display: inline-block;
+    cursor: help;
+    color: #9ca3af;
+    font-size: 10px;
+    border-bottom: 1px dashed #c3c4c7;
+    margin-left: 3px;
+    line-height: 1;
+    vertical-align: middle;
+}
+.ss-help:hover {
+    color: #2271b1;
+    border-bottom-color: #2271b1;
+}
