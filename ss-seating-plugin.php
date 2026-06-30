@@ -10,6 +10,18 @@
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  */
 
+// ── Auto-updater via GitHub Releases ──────────────────────────────────────────
+$ss_puc = plugin_dir_path( __FILE__ ) . 'lib/plugin-update-checker/plugin-update-checker.php';
+if ( file_exists( $ss_puc ) ) {
+    require_once $ss_puc;
+    $ss_checker = YahnisElsts\PluginUpdateChecker\v5\PucFactory::buildUpdateChecker(
+        'https://github.com/julianrojasar-beep/ss-seating-plugin/',
+        __FILE__,
+        'ss-seating-plugin'
+    );
+    $ss_checker->setBranch( 'main' );
+}
+
 // Shortcode para probar el plugin (solo debugging manual)
 function ss_test_shortcode($atts = array()) {
     return '<div style="padding:20px; background:#111; color:#fff; text-align:center;">
