@@ -555,101 +555,7 @@ function ss_ajax_patch_seats(): void {
     wp_send_json_success( $log );
 }
 
-// ── Parser CSV MercadoPago ──────────────────────────────────────────────────
-add_action( 'wp_ajax_ss_parse_mp_csv', 'ss_ajax_parse_mp_csv' );
-function ss_ajax_parse_mp_csv(): void {
-    check_ajax_referer( 'ss_bo_report', 'nonce' );
-    if ( ! current_user_can( 'manage_woocommerce' ) ) {
-        wp_send_json_error( 'Unauthorized' );
-    }
-
-    $event_id = absint( $_POST['event_id'] ?? 0 );
-    if ( ! $event_id || empty( $_FILES['mp_csv']['tmp_name'] ) ) {
-        wp_send_json_error( 'Faltan parámetros' );
-    }
-
-    $file = $_FILES['mp_csv']['tmp_name'];
-    $raw  = file_get_contents( $file ); // phpcs:ignore WordPress.WP.AlternativeFunctions
-    if ( $raw === false || $raw === '' ) {
-        wp_send_json_error( 'No se pudo leer el archivo CSV (vacío o sin acceso)' );
-    }
-    $raw   = mb_convert_encoding( $raw, 'UTF-8', 'ISO-8859-1' );
-    $raw   = preg_replace( '/^\xEF\xBB\xBF/', '', $raw ); // quitar BOM UTF-8
-    $raw   = str_replace( array( "\r\n", "\r" ), "\n", trim( $raw ) ); // normalizar saltos
-    $lines = explode( "\n", $raw );
-
-    $header       = str_getcsv( array_shift( $lines ), ';' );
-    $cols         = array();
-    $key_patterns = array(
-        'external_reference'  => 'external_reference',
-        'transaction_amount'  => 'transaction_amount',
-        'mercadopago_fee'     => 'mercadopago_fee',
-        'net_received_amount' => 'net_received_amount',
-        'status'              => '(status)',      // evita match con shipment_status / status_detail
-        'date_approved'       => 'date_approved',
-    );
-    foreach ( $header as $i => $col ) {
-        foreach ( $key_patterns as $key => $pattern ) {
-            if ( ! isset( $cols[ $key ] ) && stripos( $col, $pattern ) !== false ) {
-                $cols[ $key ] = $i; // primer match solamente
-            }
-        }
-    }
-
-    $missing = array_diff( array( 'external_reference', 'transaction_amount', 'net_received_amount', 'status' ), array_keys( $cols ) );
-    if ( ! empty( $missing ) ) {
-        wp_send_json_error( 'Columnas no encontradas en el CSV: ' . implode( ', ', $missing ) );
-    }
-
-    $matched      = array();
-    $unmatched_mp = array();
-    $total_bruto  = 0.0;
-    $total_fee    = 0.0;
-    $total_neto   = 0.0;
-
-    foreach ( $lines as $line ) {
-        if ( trim( $line ) === '' ) { continue; }
-        $row = str_getcsv( $line, ';' );
-        if ( ( $row[ $cols['status'] ] ?? '' ) !== 'approved' ) { continue; }
-
-        $ext_ref  = trim( $row[ $cols['external_reference'] ] ?? '' );
-        $order_id = (int) preg_replace( '/\D/', '', $ext_ref ); // WC-201 → 201
-        $bruto    = (float) str_replace( ',', '.', $row[ $cols['transaction_amount'] ]  ?? '0' );
-        $fee      = isset( $cols['mercadopago_fee'] )
-            ? (float) str_replace( ',', '.', $row[ $cols['mercadopago_fee'] ] ?? '0' )
-            : 0.0;
-        $neto     = (float) str_replace( ',', '.', $row[ $cols['net_received_amount'] ] ?? '0' );
-        $fecha    = $row[ $cols['date_approved'] ] ?? '';
-
-        if ( ! $order_id ) {
-            $unmatched_mp[] = array( 'ext_ref' => $ext_ref, 'bruto' => $bruto,
-                                     'fee' => $fee, 'neto' => $neto, 'fecha' => $fecha );
-            continue;
-        }
-
-        // Cargar el pedido directamente por ID y verificar que pertenece al evento
-        $wo = wc_get_order( $order_id );
-        if ( $wo && (int) $wo->get_meta( 'ss_event_id' ) === $event_id && $wo->get_meta( '_ss_boxoffice_sale' ) !== 'yes' ) {
-            $matched[]    = array( 'order_id' => $order_id, 'ext_ref' => $ext_ref,
-                                   'bruto' => $bruto, 'fee' => $fee, 'neto' => $neto, 'fecha' => $fecha );
-            $total_bruto += $bruto;
-            $total_fee   += $fee;
-            $total_neto  += $neto;
-        } else {
-            $unmatched_mp[] = array( 'ext_ref' => $ext_ref, 'bruto' => $bruto,
-                                     'fee' => $fee, 'neto' => $neto, 'fecha' => $fecha );
-        }
-    }
-
-    wp_send_json_success( array(
-        'matched'        => $matched,
-        'unmatched_mp'   => $unmatched_mp,
-        'missing_in_mp'  => array(),
-        'total_bruto'    => round( $total_bruto, 2 ),
-        'total_fee'      => round( $total_fee, 2 ),
-        'total_neto'     => round( $total_neto, 2 ),
-    ) );
-}
+// ss_ajax_parse_mp_csv eliminado — el cierre contable usa WooCommerce como fuente de verdad.
 
 // ── Guardar extras del cierre contable ────────────────────────────────────────
 add_action( 'wp_ajax_ss_extras_save', 'ss_ajax_extras_save' );
@@ -8310,7 +8216,7 @@ function ss_cierre_contable_page(): void {
         <?php if ( $event_id ) : ?>
 
         <?php /* ── Ventas Web ── */ ?>
-        <h2 style="font-size:15px;border-bottom:2px solid #2271b1;padding-bottom:4px;margin:24px 0 12px">Ventas Web (MercadoPago)</h2>
+        <h2 style="font-size:15px;border-bottom:2px solid #2271b1;padding-bottom:4px;margin:24px 0 12px">Ventas Web</h2>
         <?php if ( empty( $web_rows ) ) : ?>
         <p style="color:#555;font-size:13px">No hay pedidos web para este evento.</p>
         <?php else : ?>
@@ -8351,104 +8257,24 @@ function ss_cierre_contable_page(): void {
         <?php endif; ?>
 
         <?php /* ── Consolidado ── */ ?>
+        <?php $total_general = $total_valor + $total_web_bruto + $total_extras; ?>
         <h2 style="font-size:15px;border-bottom:2px solid #2271b1;padding-bottom:4px;margin:24px 0 12px">Consolidado</h2>
         <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:14px 16px;font-size:13px;margin-bottom:16px">
             <div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:10px">
-                <div>Total BO cobrado: <strong>$<?php echo number_format( $total_valor, 0, ',', '.' ); ?></strong></div>
-                <div>Total web bruto (WC): <strong>$<?php echo number_format( $total_web_bruto, 0, ',', '.' ); ?></strong></div>
-                <div>Total sistema: <strong>$<?php echo number_format( $total_valor + $total_web_bruto, 0, ',', '.' ); ?></strong></div>
+                <div>Total Box Office: <strong>$<?php echo number_format( $total_valor, 0, ',', '.' ); ?></strong></div>
+                <div>Total Web (WC): <strong>$<?php echo number_format( $total_web_bruto, 0, ',', '.' ); ?></strong></div>
+                <?php if ( $total_extras > 0 ) : ?>
+                <div>Extras / Taquilla: <strong>$<?php echo number_format( $total_extras, 0, ',', '.' ); ?></strong></div>
+                <?php endif; ?>
             </div>
-            <hr style="margin:10px 0;border:none;border-top:1px solid #e5e7eb">
-            <p style="font-weight:600;margin:0 0 8px;font-size:13px">Reconciliación con MercadoPago</p>
-            <p style="color:#6b7280;font-size:12px;margin:0 0 8px">
-                Sube el CSV de MP del mes (separado por <code>;</code>, columna <code>external_reference</code> con <code>WC-NNN</code>)
-                para cruzar contra los pedidos de este evento y ver el neto real recibido.
-            </p>
-            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-                <input type="file" id="ss-mp-csv-file" accept=".csv" style="font-size:12px">
-                <button type="button" id="ss-mp-csv-upload" class="button button-secondary">Analizar CSV</button>
-                <span id="ss-mp-csv-status" style="font-size:12px;color:#6b7280"></span>
+            <div style="font-size:15px;font-weight:700;color:#065f46;border-top:1px solid #e5e7eb;padding-top:10px;margin-top:2px">
+                TOTAL RECAUDADO: <span style="font-size:17px">$<?php echo number_format( $total_general, 0, ',', '.' ); ?></span>
             </div>
-            <div id="ss-mp-csv-result" style="margin-top:12px"></div>
         </div>
-
-        <script>
-        (function(){
-            var nonce    = '<?php echo esc_js( wp_create_nonce( 'ss_bo_report' ) ); ?>';
-            var ajaxUrl  = '<?php echo esc_js( admin_url( 'admin-ajax.php' ) ); ?>';
-            var eventId  = <?php echo (int) $event_id; ?>;
-            var totalBO     = <?php echo (int) $total_valor; ?>;
-            var totalExtras = <?php echo (int) $total_extras; ?>;
-
-            document.getElementById('ss-mp-csv-upload').addEventListener('click', function(){
-                var file = document.getElementById('ss-mp-csv-file').files[0];
-                var status = document.getElementById('ss-mp-csv-status');
-                if (!file) { status.textContent = 'Selecciona un archivo CSV primero.'; return; }
-                status.textContent = 'Analizando...';
-                var fd = new FormData();
-                fd.append('action',   'ss_parse_mp_csv');
-                fd.append('nonce',    nonce);
-                fd.append('event_id', eventId);
-                fd.append('mp_csv',   file);
-                fetch(ajaxUrl, { method: 'POST', body: fd })
-                    .then(function(r){ return r.json(); })
-                    .then(function(resp){
-                        status.textContent = '';
-                        if (!resp.success) { status.style.color='#dc2626'; status.textContent = 'Error: ' + resp.data; return; }
-                        renderMpResult(resp.data);
-                    })
-                    .catch(function(){ status.style.color='#dc2626'; status.textContent = 'Error de red.'; });
-            });
-
-            function fmt(n){ return Math.round(n).toLocaleString('es-CO'); }
-
-            function renderMpResult(data){
-                var html = '<table class="widefat striped" style="font-size:12px;margin-bottom:12px">';
-                html += '<thead><tr><th>#Pedido</th><th style="text-align:right">Bruto</th><th style="text-align:right">Comisión MP</th><th style="text-align:right">Neto recibido</th><th>Fecha</th></tr></thead><tbody>';
-                data.matched.forEach(function(r){
-                    html += '<tr><td><a href="<?php echo esc_url( admin_url("post.php?action=edit&post=") ); ?>' + r.order_id + '" target="_blank">#' + r.order_id + '</a></td>' +
-                        '<td style="text-align:right">$' + fmt(r.bruto) + '</td>' +
-                        '<td style="text-align:right;color:#dc2626">$' + fmt(r.fee) + '</td>' +
-                        '<td style="text-align:right;color:#059669;font-weight:600">$' + fmt(r.neto) + '</td>' +
-                        '<td style="font-size:11px;color:#666">' + r.fecha + '</td></tr>';
-                });
-                if (data.matched.length === 0) {
-                    html += '<tr><td colspan="5" style="color:#9ca3af;text-align:center">Sin pedidos matched</td></tr>';
-                }
-                html += '</tbody></table>';
-
-                var totalReal = totalBO + data.total_neto + totalExtras;
-                html += '<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:6px;padding:12px 14px;font-size:13px">';
-                html += '<div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:8px">';
-                html += '<span>Bruto MP: <strong>$' + fmt(data.total_bruto) + '</strong></span>';
-                html += '<span>Comisión MP: <strong style="color:#dc2626">$' + fmt(data.total_fee) + '</strong></span>';
-                html += '<span>Neto MP: <strong style="color:#059669">$' + fmt(data.total_neto) + '</strong></span>';
-                html += '</div>';
-                html += '<div style="font-size:14px;font-weight:700;color:#065f46;border-top:1px solid #86efac;padding-top:8px">';
-                html += 'TOTAL REAL RECAUDADO: BO $' + fmt(totalBO) + ' + MP neto $' + fmt(data.total_neto) +
-                    (totalExtras ? ' + Extras $' + fmt(totalExtras) : '') +
-                    ' = <span style="font-size:16px">$' + fmt(totalReal) + '</span>';
-                html += '</div></div>';
-
-                if (data.unmatched_mp.length) {
-                    html += '<details style="margin-top:8px;font-size:12px"><summary style="cursor:pointer;color:#b45309">&#9888; ' + data.unmatched_mp.length + ' entradas MP sin pedido en este evento</summary><ul style="margin:4px 0 0 16px">';
-                    data.unmatched_mp.forEach(function(r){ html += '<li>' + r.ext_ref + ' — $' + fmt(r.bruto) + '</li>'; });
-                    html += '</ul></details>';
-                }
-                if (data.missing_in_mp.length) {
-                    html += '<details style="margin-top:8px;font-size:12px"><summary style="cursor:pointer;color:#b45309">&#9888; ' + data.missing_in_mp.length + ' pedidos del evento sin entrada en el CSV MP</summary><ul style="margin:4px 0 0 16px">';
-                    data.missing_in_mp.forEach(function(id){ html += '<li>#' + id + '</li>'; });
-                    html += '</ul></details>';
-                }
-
-                document.getElementById('ss-mp-csv-result').innerHTML = html;
-            }
-        })();
-        </script>
 
         <?php /* ── Extras / Taquilla ── */ ?>
         <h2 style="font-size:15px;border-bottom:2px solid #2271b1;padding-bottom:4px;margin:24px 0 12px">Ingresos Adicionales (Taquilla / Extras)</h2>
-        <p style="color:#6b7280;font-size:12px;margin:0 0 10px">Ventas en puerta o ingresos manuales no registrados en Box Office ni MercadoPago. Se guardan por evento y se suman al total real.</p>
+        <p style="color:#6b7280;font-size:12px;margin:0 0 10px">Ventas en puerta o ingresos manuales no registrados en Box Office ni online. Se guardan por evento y se suman al total.</p>
 
         <table id="ss-extras-table" class="widefat" style="font-size:12px;margin-bottom:8px">
             <thead>
