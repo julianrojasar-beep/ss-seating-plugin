@@ -30,3 +30,7 @@ wp-content/uploads/ss-qrs/
 
 # Notas internas de desarrollo (no son parte del plugin)
 REFACTOR-NOTES.md
+
+# Scripts de build locales
+build.bat
+build.ps1

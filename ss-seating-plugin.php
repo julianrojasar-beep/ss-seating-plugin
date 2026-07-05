@@ -1,9 +1,9 @@
-﻿<?php
+<?php
 /**
  * Plugin Name: SS Seating
  * Plugin URI: https://tusitio.com
  * Description: Sistema de selección de sillas y venta de boletas con QR para eventos.
- * Version: 1.3.3
+ * Version: 1.3.4
  * Author: Julian Rojas
  * Author URI: https://tusitio.com
  * License: GPL v2 or later
