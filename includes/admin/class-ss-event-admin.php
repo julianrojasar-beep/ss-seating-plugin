@@ -105,6 +105,9 @@ class SS_Event_Admin {
                 <button type="button" class="ss-admin-tabs__btn" data-tab="descuentos">
                     <span class="dashicons dashicons-tag"></span> Descuentos
                 </button>
+                <button type="button" class="ss-admin-tabs__btn" data-tab="difusion">
+                    <span class="dashicons dashicons-megaphone"></span> Difusión
+                </button>
             </nav>
 
             <div class="ss-admin-tabs__panels">
@@ -115,6 +118,7 @@ class SS_Event_Admin {
                 self::render_tab_organizador( $post );
                 self::render_tab_tickets( $post );
                 self::render_tab_mapa( $post );
+                SS_Difusion_Admin::render_tab( $post );
                 ?>
             </div>
         </div>
@@ -448,7 +452,7 @@ class SS_Event_Admin {
             $gd_enabled = get_post_meta( $post->ID, '_ss_group_discount_enabled', true );
             $gd_min_qty = (int) get_post_meta( $post->ID, '_ss_group_discount_min_qty', true );
             $gd_pct     = (int) get_post_meta( $post->ID, '_ss_group_discount_pct', true );
-            $ly_enabled = get_post_meta( $post->ID, '_ss_loyalty_enabled', true );
+            $ly_enabled = SS_FIDELIZACION_ENABLED ? get_post_meta( $post->ID, '_ss_loyalty_enabled', true ) : '0';
             if ( $gd_min_qty <= 0 ) { $gd_min_qty = 5; }
             ?>
             <h3 style="margin-top:0">Descuento por grupo</h3>
@@ -477,6 +481,7 @@ class SS_Event_Admin {
                 </tr>
             </table>
 
+            <?php if ( SS_FIDELIZACION_ENABLED ) : ?>
             <hr>
             <h3>Sistema de fidelización</h3>
             <table class="form-table">
@@ -491,6 +496,7 @@ class SS_Event_Admin {
                     </td>
                 </tr>
             </table>
+            <?php endif; ?>
         </div>
         <?php
     }
@@ -584,8 +590,10 @@ class SS_Event_Admin {
         update_post_meta( $post_id, '_ss_group_discount_pct', $gd_pct );
 
         // ── Fidelización ──
-        $ly_enabled = ! empty( $_POST['ss_loyalty_enabled'] ) ? '1' : '0';
-        update_post_meta( $post_id, '_ss_loyalty_enabled', $ly_enabled );
+        if ( SS_FIDELIZACION_ENABLED ) {
+            $ly_enabled = ! empty( $_POST['ss_loyalty_enabled'] ) ? '1' : '0';
+            update_post_meta( $post_id, '_ss_loyalty_enabled', $ly_enabled );
+        }
 
         // ── Ticket types ──
         $raw_tt = isset( $_POST['ss_tt'] ) && is_array( $_POST['ss_tt'] ) ? $_POST['ss_tt'] : array();

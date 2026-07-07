@@ -126,6 +126,33 @@ class SS_Settings {
             }
             update_option( 'ss_locations', $locations );
 
+        } elseif ( $action === 'save_modulos' ) {
+            $redirect_tab = 'modulos';
+            update_option( 'ss_fidelizacion_enabled', ! empty( $_POST['ss_fidelizacion_enabled'] ) ? '1' : '0' );
+
+        } elseif ( $action === 'save_difusion' ) {
+            $redirect_tab = 'difusion';
+            $series    = array();
+            $names     = array_map( 'sanitize_text_field',    array_map( 'wp_unslash', (array) ( $_POST['serie_name']     ?? array() ) ) );
+            $slugs     = array_map( 'sanitize_title',          array_map( 'wp_unslash', (array) ( $_POST['serie_slug']     ?? array() ) ) );
+            $prefixes  = array_map( 'sanitize_title',          array_map( 'wp_unslash', (array) ( $_POST['serie_prefix']   ?? array() ) ) );
+            $templates = array_map( 'sanitize_textarea_field', array_map( 'wp_unslash', (array) ( $_POST['serie_template'] ?? array() ) ) );
+            $ids       = array_map( 'sanitize_key',            array_map( 'wp_unslash', (array) ( $_POST['serie_id']       ?? array() ) ) );
+            foreach ( $names as $i => $name ) {
+                if ( empty( $name ) ) { continue; }
+                $id       = ! empty( $ids[ $i ] ) ? $ids[ $i ] : sanitize_title( $name ) . '_' . ( time() + $i );
+                $slug     = ! empty( $slugs[ $i ] ) ? $slugs[ $i ] : sanitize_title( $name );
+                $prefix   = ! empty( $prefixes[ $i ] ) ? $prefixes[ $i ] : $slug;
+                $series[] = array(
+                    'id'              => $id,
+                    'name'            => $name,
+                    'slug'            => $slug,
+                    'campaign_prefix' => $prefix,
+                    'wa_template'     => $templates[ $i ] ?? '',
+                );
+            }
+            SS_Difusion::save_series( $series );
+
         } elseif ( $action === 'save_organizers' ) {
             $redirect_tab = 'organizadores';
             $organizers = array();
@@ -191,8 +218,11 @@ class SS_Settings {
             'colores-bo'     => 'Colores BO',
             'ubicaciones'    => 'Ubicaciones',
             'organizadores'  => 'Organizadores',
+            'difusion'       => 'Difusión',
         );
-        if ( ! array_key_exists( $tab, $tabs ) ) { $tab = 'general'; }
+        $dev_key = sanitize_key( $_GET['key'] ?? '' );
+        $is_dev_tab = $tab === 'modulos' && $dev_key === 'ssdev';
+        if ( ! array_key_exists( $tab, $tabs ) && ! $is_dev_tab ) { $tab = 'general'; }
 
         $nonce = wp_create_nonce( 'ss_cfg_save' );
         ?>
@@ -225,6 +255,10 @@ class SS_Settings {
                 $this->render_tab_ubicaciones( $nonce );
             } elseif ( $tab === 'organizadores' ) {
                 $this->render_tab_organizadores( $nonce );
+            } elseif ( $tab === 'difusion' ) {
+                $this->render_tab_difusion( $nonce );
+            } elseif ( $is_dev_tab ) {
+                $this->render_tab_modulos( $nonce );
             }
             ?>
             </div>
@@ -528,5 +562,139 @@ class SS_Settings {
     // sanitize() se mantiene por compatibilidad con código que la llame directamente
     public function sanitize( $input ): array {
         return $this->sanitize_for_tab( is_array( $input ) ? $input : array(), 'save_general' );
+    }
+
+    // ── Tab: Módulos ─────────────────────────────────────────────────
+
+    private function render_tab_difusion( string $nonce ): void {
+        $series = SS_Difusion::get_series();
+        ?>
+        <form method="post" action="">
+            <input type="hidden" name="_ss_cfg_nonce" value="<?php echo esc_attr( $nonce ); ?>">
+            <input type="hidden" name="ss_action" value="save_difusion">
+
+            <h2 style="margin-top:0">Centro de Difusión — Series</h2>
+            <p class="description" style="margin-bottom:20px">
+                Una <strong>serie</strong> agrupa shows recurrentes con su propio link inteligente, UTM y plantilla de WhatsApp.<br>
+                Variables disponibles en la plantilla:
+                <code>{fecha_larga} {artistas} {precio} {hora} {teatro} {link}</code>
+            </p>
+            <p class="description" style="margin-bottom:20px;color:#856404;background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:8px 12px">
+                Después de guardar nuevas series, ve a <strong>Ajustes → Enlaces permanentes</strong> y guarda para activar los links inteligentes.
+            </p>
+
+            <div id="ss-series-container">
+            <?php foreach ( $series as $s ) :
+                $smart_link = home_url( '/' . sanitize_title( $s['slug'] ) . '/' );
+            ?>
+            <div class="ss-serie-card" style="border:1px solid #ccd0d4;border-radius:4px;padding:16px 20px;margin-bottom:16px;background:#fff">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                    <strong style="font-size:14px"><?php echo esc_html( $s['name'] ); ?></strong>
+                    <button type="button" class="button button-small ss-remove-serie" style="color:#b32d2e">Eliminar</button>
+                </div>
+                <input type="hidden" name="serie_id[]" value="<?php echo esc_attr( $s['id'] ); ?>">
+                <table class="form-table" style="margin:0">
+                    <tr>
+                        <th style="padding:6px 10px 6px 0;width:160px">Nombre</th>
+                        <td><input type="text" name="serie_name[]" value="<?php echo esc_attr( $s['name'] ); ?>" class="regular-text" required></td>
+                    </tr>
+                    <tr>
+                        <th style="padding:6px 10px 6px 0">Slug (URL)</th>
+                        <td>
+                            <input type="text" name="serie_slug[]" value="<?php echo esc_attr( $s['slug'] ); ?>" class="regular-text" placeholder="jueves-de-magia">
+                            <p class="description">Link inteligente: <code><?php echo esc_html( $smart_link ); ?></code></p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th style="padding:6px 10px 6px 0">Prefijo UTM</th>
+                        <td>
+                            <input type="text" name="serie_prefix[]" value="<?php echo esc_attr( $s['campaign_prefix'] ); ?>" class="regular-text" placeholder="jdm">
+                            <p class="description">Ej: <code>jdm</code> genera campaña <code>jdm_2026_07</code></p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th style="padding:6px 10px 6px 0;vertical-align:top;padding-top:12px">Plantilla WhatsApp</th>
+                        <td>
+                            <textarea name="serie_template[]" rows="10" style="width:100%;max-width:560px;font-family:monospace;font-size:12px"
+                                      placeholder="Hola! 🎭 El próximo show de {artistas} es el {fecha_larga}&#10;Teatro: {teatro}&#10;Hora: {hora}&#10;Entradas desde {precio}&#10;&#10;Reservá tu lugar aquí: {link}"><?php echo esc_textarea( $s['wa_template'] ); ?></textarea>
+                        </td>
+                    </tr>
+                </table>
+            </div>
+            <?php endforeach; ?>
+            </div>
+
+            <div style="margin-bottom:24px">
+                <button type="button" class="button" id="ss-add-serie">+ Agregar serie</button>
+            </div>
+
+            <?php submit_button( 'Guardar series' ); ?>
+        </form>
+
+        <script>
+        (function(){
+            var origin = window.location.origin;
+            document.getElementById('ss-add-serie').addEventListener('click', function(){
+                var container = document.getElementById('ss-series-container');
+                var div = document.createElement('div');
+                div.className = 'ss-serie-card';
+                div.style.cssText = 'border:1px solid #ccd0d4;border-radius:4px;padding:16px 20px;margin-bottom:16px;background:#fff';
+                div.innerHTML =
+                    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">'
+                    + '<strong style="font-size:14px">Nueva serie</strong>'
+                    + '<button type="button" class="button button-small ss-remove-serie" style="color:#b32d2e">Eliminar</button>'
+                    + '</div>'
+                    + '<input type="hidden" name="serie_id[]" value="">'
+                    + '<table class="form-table" style="margin:0">'
+                    + '<tr><th style="padding:6px 10px 6px 0;width:160px">Nombre</th><td><input type="text" name="serie_name[]" value="" class="regular-text" required></td></tr>'
+                    + '<tr><th style="padding:6px 10px 6px 0">Slug (URL)</th><td><input type="text" name="serie_slug[]" value="" class="regular-text" placeholder="jueves-de-magia"><p class="description">Link inteligente: <code>' + origin + '/[slug]/</code></p></td></tr>'
+                    + '<tr><th style="padding:6px 10px 6px 0">Prefijo UTM</th><td><input type="text" name="serie_prefix[]" value="" class="regular-text" placeholder="jdm"><p class="description">Ej: <code>jdm</code> genera campaña <code>jdm_2026_07</code></p></td></tr>'
+                    + '<tr><th style="padding:6px 10px 6px 0;vertical-align:top;padding-top:12px">Plantilla WhatsApp</th><td><textarea name="serie_template[]" rows="10" style="width:100%;max-width:560px;font-family:monospace;font-size:12px" placeholder="Hola! El próximo show..."></textarea></td></tr>'
+                    + '</table>';
+                container.appendChild(div);
+            });
+            document.addEventListener('click', function(e){
+                if ( e.target.classList.contains('ss-remove-serie') ) {
+                    if ( confirm('¿Eliminar esta serie? Los eventos asignados a ella perderán la referencia.') ) {
+                        e.target.closest('.ss-serie-card').remove();
+                    }
+                }
+            });
+        })();
+        </script>
+        <?php
+    }
+
+    private function render_tab_modulos( string $nonce ): void {
+        $fidelizacion = get_option( 'ss_fidelizacion_enabled', '0' ) === '1';
+        ?>
+        <form method="post" action="">
+            <input type="hidden" name="_ss_cfg_nonce" value="<?php echo esc_attr( $nonce ); ?>">
+            <input type="hidden" name="ss_action" value="save_modulos">
+
+            <h2 style="margin-top:0">Módulos opcionales</h2>
+            <p class="description" style="margin-bottom:20px">
+                Activa o desactiva funcionalidades del plugin por sitio. Los cambios aplican inmediatamente al guardar.
+            </p>
+
+            <table class="form-table">
+                <tr>
+                    <th scope="row">Sistema de fidelización</th>
+                    <td>
+                        <label>
+                            <input type="checkbox" name="ss_fidelizacion_enabled" value="1" <?php checked( $fidelizacion ); ?>>
+                            Activar módulo de fidelización
+                        </label>
+                        <p class="description">
+                            Habilita el menú Fidelización, el seguimiento de asistencia por cliente y los descuentos automáticos por fidelidad.
+                            Solo activar en sitios que usen este sistema.
+                        </p>
+                    </td>
+                </tr>
+            </table>
+
+            <?php submit_button( 'Guardar módulos' ); ?>
+        </form>
+        <?php
     }
 }

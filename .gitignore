@@ -34,3 +34,6 @@ REFACTOR-NOTES.md
 # Scripts de build locales
 build.bat
 build.ps1
+
+# Guía interna para Claude Code
+CLAUDE.md

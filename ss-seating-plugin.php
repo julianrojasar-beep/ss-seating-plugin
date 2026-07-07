@@ -3,12 +3,19 @@
  * Plugin Name: SS Seating
  * Plugin URI: https://tusitio.com
  * Description: Sistema de selección de sillas y venta de boletas con QR para eventos.
- * Version: 1.3.4
+ * Version: 1.3.7
  * Author: Julian Rojas
  * Author URI: https://tusitio.com
  * License: GPL v2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  */
+
+// ── Feature flags ─────────────────────────────────────────────────────────────
+// wp-config.php puede forzar el valor con define('SS_FIDELIZACION_ENABLED', true/false).
+// Si no está definido, lee la opción guardada en la DB desde SS Seating → Configuración → Módulos.
+if ( ! defined( 'SS_FIDELIZACION_ENABLED' ) ) {
+    define( 'SS_FIDELIZACION_ENABLED', get_option( 'ss_fidelizacion_enabled', '0' ) === '1' );
+}
 
 // ── Auto-updater via GitHub Releases ──────────────────────────────────────────
 $ss_puc = plugin_dir_path( __FILE__ ) . 'lib/plugin-update-checker/plugin-update-checker.php';
@@ -52,34 +59,46 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/admin/class-ss-event-admin.
 // ── Frontend: Ticket Form ────────────────────────────────────────────────────
 require_once plugin_dir_path( __FILE__ ) . 'includes/frontend/class-ss-ticket-form.php';
 
-// ── Loyalty + Group Discount ──────────────────────────────────────────────────
-require_once plugin_dir_path( __FILE__ ) . 'includes/loyalty/class-ss-group-discount.php';
-require_once plugin_dir_path( __FILE__ ) . 'includes/loyalty/class-ss-loyalty.php';
+// ── Difusión: Centro de Difusión ─────────────────────────────────────────────
+require_once plugin_dir_path( __FILE__ ) . 'includes/difusion/class-ss-difusion.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/difusion/class-ss-difusion-admin.php';
+
+if ( SS_FIDELIZACION_ENABLED ) {
+    require_once plugin_dir_path( __FILE__ ) . 'includes/loyalty/class-ss-group-discount.php';
+    require_once plugin_dir_path( __FILE__ ) . 'includes/loyalty/class-ss-loyalty.php';
+}
 
 add_action( 'init', array( 'SS_Event_CPT', 'register' ) );
 SS_Settings::init();
 SS_Event_Admin::init();
 SS_Ticket_Form::init();
-SS_Loyalty::init();
+SS_Difusion::init();
+if ( SS_FIDELIZACION_ENABLED ) {
+    SS_Loyalty::init();
+}
 
 // ── Menú admin: Fidelización ─────────────────────────────────────────────────
-add_action( 'admin_menu', 'ss_loyalty_add_admin_menu', 25 );
-function ss_loyalty_add_admin_menu(): void {
-    add_submenu_page(
-        'ss-seating-dashboard',
-        'Fidelización — SS Seating',
-        'Fidelización',
-        'manage_options',
-        'ss-loyalty',
-        array( 'SS_Loyalty', 'render_admin_page' )
-    );
+if ( SS_FIDELIZACION_ENABLED ) {
+    add_action( 'admin_menu', 'ss_loyalty_add_admin_menu', 25 );
+    function ss_loyalty_add_admin_menu(): void {
+        add_submenu_page(
+            'ss-seating-dashboard',
+            'Fidelización — SS Seating',
+            'Fidelización',
+            'manage_options',
+            'ss-loyalty',
+            array( 'SS_Loyalty', 'render_admin_page' )
+        );
+    }
 }
 
 // ── Pasar config de grupo al Box Office JS ────────────────────────────────────
-add_filter( 'ss_boxoffice_event_data', 'ss_boxoffice_add_discount_data', 10, 2 );
-function ss_boxoffice_add_discount_data( array $data, int $event_id ): array {
-    $data['groupDiscount'] = SS_Group_Discount::get_for_event( $event_id );
-    return $data;
+if ( SS_FIDELIZACION_ENABLED ) {
+    add_filter( 'ss_boxoffice_event_data', 'ss_boxoffice_add_discount_data', 10, 2 );
+    function ss_boxoffice_add_discount_data( array $data, int $event_id ): array {
+        $data['groupDiscount'] = SS_Group_Discount::get_for_event( $event_id );
+        return $data;
+    }
 }
 
 // Legacy ss_seating_enqueue_assets removed — ss_event uses SS_Ticket_Form::enqueue_assets().
@@ -1032,7 +1051,7 @@ function ss_render_event_card( WP_Post $event, bool $is_past = false ): string {
 
     // Badges de descuento
     $badge_group   = ! $is_past && get_post_meta( $event_id, '_ss_group_discount_enabled', true ) === '1';
-    $badge_loyalty = ! $is_past && get_post_meta( $event_id, '_ss_loyalty_enabled', true ) === '1';
+    $badge_loyalty = SS_FIDELIZACION_ENABLED && ! $is_past && get_post_meta( $event_id, '_ss_loyalty_enabled', true ) === '1';
     $gd_min_qty    = $badge_group ? (int) get_post_meta( $event_id, '_ss_group_discount_min_qty', true ) : 5;
     $gd_pct        = $badge_group ? (int) get_post_meta( $event_id, '_ss_group_discount_pct', true ) : 0;
     if ( $gd_min_qty <= 0 ) { $gd_min_qty = 5; }
@@ -2060,6 +2079,7 @@ function ss_seating_save_seats_to_order( $order, $data ): void {
     $event_id = ! empty( $_POST['mpwem_post_id'] ) ? (int) $_POST['mpwem_post_id']
               : ( ! empty( $_POST['ss_event_id'] ) ? (int) $_POST['ss_event_id'] : 0 );
     if ( $event_id > 0 ) {
+        $order->update_meta_data( 'ss_event_id', $event_id );
         $seat_data = ss_build_seat_data( $seats, $event_id );
         $order->update_meta_data( 'ss_seat_data', $seat_data );
         // Extract unique zones for quick access
@@ -8073,17 +8093,20 @@ function ss_cierre_contable_page(): void {
     $total_web_bruto = 0;
 
     if ( $event_id ) {
-        $all_web_ids = wc_get_orders( array(
-            'meta_query' => array(
-                array( 'key' => 'ss_event_id', 'value' => $event_id, 'compare' => '=', 'type' => 'NUMERIC' ),
-            ),
-            'status'     => array( 'wc-processing', 'wc-completed' ),
-            'limit'      => -1,
-            'return'     => 'ids',
+        // Busca via order items (ss_event_id se guarda en item meta, no siempre en order meta)
+        $item_order_ids = $wpdb->get_col( $wpdb->prepare(
+            "SELECT DISTINCT oi.order_id
+             FROM {$wpdb->prefix}woocommerce_order_items AS oi
+             INNER JOIN {$wpdb->prefix}woocommerce_order_itemmeta AS oim
+                 ON oi.order_item_id = oim.order_item_id
+             WHERE oim.meta_key = 'ss_event_id' AND oim.meta_value = %s",
+            (string) $event_id
         ) );
-        foreach ( $all_web_ids as $woid ) {
+        foreach ( $item_order_ids as $woid ) {
             $wo = wc_get_order( (int) $woid );
-            if ( ! $wo || $wo->get_meta( '_ss_boxoffice_sale' ) === 'yes' ) { continue; }
+            if ( ! $wo ) { continue; }
+            if ( $wo->get_meta( '_ss_boxoffice_sale' ) === 'yes' ) { continue; }
+            if ( ! in_array( $wo->get_status(), array( 'processing', 'completed' ), true ) ) { continue; }
             $w_seats     = (array) $wo->get_meta( 'ss_seats' );
             $w_tkt       = $wo->get_meta( 'ss_ticket_qtys' );
             $w_ct        = count( array_filter( $w_seats ) );
