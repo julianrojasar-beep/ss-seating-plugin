@@ -752,6 +752,7 @@
           qr_mode:       document.getElementById('bo-sell-qrmode').value,
           valor_cobrado: (parseInt(document.getElementById('bo-valor-input').value, 10) || 0),
           nota_bo:       (document.getElementById('bo-sell-nota') ? document.getElementById('bo-sell-nota').value.trim() : ''),
+          origen_venta:  (document.getElementById('bo-sell-origen') ? document.getElementById('bo-sell-origen').value : ''),
         });
       });
     }
@@ -796,6 +797,8 @@
     if (valorInput) valorInput.value = '';
     var notaInput = document.getElementById('bo-sell-nota');
     if (notaInput) notaInput.value = '';
+    var origenInput = document.getElementById('bo-sell-origen');
+    if (origenInput) origenInput.value = '';
     document.getElementById('bo-sell-qrmode').value = 'order';
 
     // Show/hide QR mode selector — only relevant when there are seats

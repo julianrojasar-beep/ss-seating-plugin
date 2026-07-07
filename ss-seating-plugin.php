@@ -63,6 +63,9 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/frontend/class-ss-ticket-fo
 require_once plugin_dir_path( __FILE__ ) . 'includes/difusion/class-ss-difusion.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/difusion/class-ss-difusion-admin.php';
 
+// ── API REST: reportes para el dashboard externo ─────────────────────────────
+require_once plugin_dir_path( __FILE__ ) . 'includes/api/class-ss-rest-reports.php';
+
 if ( SS_FIDELIZACION_ENABLED ) {
     require_once plugin_dir_path( __FILE__ ) . 'includes/loyalty/class-ss-group-discount.php';
     require_once plugin_dir_path( __FILE__ ) . 'includes/loyalty/class-ss-loyalty.php';
@@ -73,6 +76,7 @@ SS_Settings::init();
 SS_Event_Admin::init();
 SS_Ticket_Form::init();
 SS_Difusion::init();
+SS_REST_Reports::init();
 if ( SS_FIDELIZACION_ENABLED ) {
     SS_Loyalty::init();
 }
@@ -2027,6 +2031,40 @@ function ss_checkout_loyalty_notice_js(): void {
 // En Block Checkout (y como red de seguridad general), guardamos ss_seats
 // directamente en el pedido desde $_POST en woocommerce_checkout_create_order.
 // ss_seats_get_from_order() lee AMBAS fuentes: item meta y order meta.
+
+// ── Captura de UTM de llegada (Centro de Difusión genera utm_source/utm_campaign
+// al compartir el smart link). Se guarda en WC session al aterrizar en la landing
+// y se persiste en el pedido en woocommerce_checkout_create_order, igual que ss_seats.
+add_action( 'wp', 'ss_seating_capture_utm_session' );
+
+function ss_seating_capture_utm_session(): void {
+    if ( is_admin() || empty( $_GET['utm_source'] ) ) {
+        return;
+    }
+    if ( ! function_exists( 'WC' ) || ! WC()->session ) {
+        return;
+    }
+    WC()->session->set( 'ss_pending_utm', array(
+        'utm_source'   => sanitize_text_field( wp_unslash( $_GET['utm_source'] ) ),
+        'utm_campaign' => isset( $_GET['utm_campaign'] ) ? sanitize_text_field( wp_unslash( $_GET['utm_campaign'] ) ) : '',
+    ) );
+}
+
+add_action( 'woocommerce_checkout_create_order', 'ss_seating_save_utm_to_order', 10, 2 );
+
+function ss_seating_save_utm_to_order( $order, $data ): void {
+    if ( ! WC()->session ) {
+        return;
+    }
+    $utm = WC()->session->get( 'ss_pending_utm' );
+    if ( empty( $utm ) || empty( $utm['utm_source'] ) ) {
+        return;
+    }
+    $order->update_meta_data( '_ss_utm_source', $utm['utm_source'] );
+    if ( ! empty( $utm['utm_campaign'] ) ) {
+        $order->update_meta_data( '_ss_utm_campaign', $utm['utm_campaign'] );
+    }
+}
 
 add_action( 'woocommerce_checkout_create_order', 'ss_seating_save_seats_to_order', 10, 2 );
 
@@ -8819,6 +8857,7 @@ function ss_boxoffice_ajax_sell(): void {
     $metodo_pago   = sanitize_text_field( wp_unslash( $_POST['metodo_pago'] ?? 'efectivo' ) );
     $valor_cobrado = (int) ( $_POST['valor_cobrado'] ?? 0 );
     $nota_bo       = sanitize_text_field( wp_unslash( $_POST['nota_bo'] ?? '' ) );
+    $origen_venta  = sanitize_text_field( wp_unslash( $_POST['origen_venta'] ?? '' ) );
 
     // ticket_qtys: JSON string like {"VIP":2,"GENERAL":1} — used in zone/hybrid mode
     $ticket_qtys_raw = isset( $_POST['ticket_qtys'] ) ? sanitize_text_field( wp_unslash( $_POST['ticket_qtys'] ) ) : '';
@@ -8950,6 +8989,10 @@ function ss_boxoffice_ajax_sell(): void {
     }
     if ( $nota_bo !== '' ) {
         $order->update_meta_data( '_ss_nota_bo', $nota_bo );
+    }
+    $origenes_validos = array( 'meta_ads', 'whatsapp', 'instagram', 'referido', 'organico' );
+    if ( in_array( $origen_venta, $origenes_validos, true ) ) {
+        $order->update_meta_data( '_ss_bo_sale_origin', $origen_venta );
     }
 
     // Build note
@@ -10133,6 +10176,16 @@ a{color:#64b5f6;text-decoration:none}
             <label class="bo-valor__label" for="bo-sell-nota">Nota</label>
             <input type="text" id="bo-sell-nota" placeholder="Ej: pago en efectivo, cortesía prensa…" style="width:100%;padding:8px 10px;background:#16213e;border:1px solid #333;border-radius:8px;color:#fff;font-size:14px;outline:none;box-sizing:border-box">
         </div>
+        <!-- Origen de la venta (opcional) -->
+        <label for="bo-sell-origen">Origen de la venta (opcional)</label>
+        <select id="bo-sell-origen">
+            <option value="">— Sin especificar —</option>
+            <option value="meta_ads">Meta Ads</option>
+            <option value="whatsapp">WhatsApp</option>
+            <option value="instagram">Instagram</option>
+            <option value="referido">Referido</option>
+            <option value="organico">Orgánico</option>
+        </select>
 
         <div class="bo-modal__actions">
             <button class="bo-modal__cancel" id="bo-sell-cancel">Cancelar</button>
