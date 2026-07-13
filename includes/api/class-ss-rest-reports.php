@@ -18,6 +18,26 @@ class SS_REST_Reports {
         add_action( 'rest_api_init', array( __CLASS__, 'register_routes' ) );
     }
 
+    public static function register_routes(): void {
+        register_rest_route( 'ss-seating/v1', '/reports/customers', array(
+            'methods'             => 'GET',
+            'callback'            => array( __CLASS__, 'get_customers_report' ),
+            'permission_callback' => array( __CLASS__, 'check_permission' ),
+        ) );
+
+        register_rest_route( 'ss-seating/v1', '/reports/sales', array(
+            'methods'             => 'GET',
+            'callback'            => array( __CLASS__, 'get_sales_report' ),
+            'permission_callback' => array( __CLASS__, 'check_permission' ),
+            'args'                => array(
+                'event_id' => array(
+                    'required' => true,
+                    'type'     => 'integer',
+                ),
+            ),
+        ) );
+    }
+
     /**
      * Crea la capability ss_view_reports y el rol dedicado dashboard_reports_bot
      * (para la Application Password del dashboard externo), y se la otorga también
@@ -218,6 +238,21 @@ class SS_REST_Reports {
                 if ( $zona_item ) {
                     $zonas_orden[] = $zona_item;
                 }
+                // Modo asiento: la zona vive por silla en ss_seat_data, no en ss_zone/ss_ticket_qtys.
+                $seat_data = $item->get_meta( 'ss_seat_data' );
+                if ( is_array( $seat_data ) ) {
+                    foreach ( $seat_data as $sd ) {
+                        if ( ! empty( $sd['zone'] ) ) {
+                            $zonas_orden[] = $sd['zone'];
+                        }
+                    }
+                }
+            }
+
+            // Sin zona/asiento en el ítem (compra directa de producto, sin selección de
+            // zona) y el evento tiene un único tipo de ticket: no hay ambigüedad posible.
+            if ( empty( $zonas_orden ) && count( $ticket_types ) === 1 && ! empty( $ticket_types[0]['zone'] ) ) {
+                $zonas_orden[] = $ticket_types[0]['zone'];
             }
 
             if ( $is_bo ) {

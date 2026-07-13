@@ -3652,6 +3652,8 @@ function ss_control_ingreso_render( string $state, int $event_id, string $token 
             }
             .ci-header h1 { font-size: 18px; font-weight: 700; color: #e94560; }
             .ci-header .ci-event { font-size: 14px; opacity: .7; }
+            .ci-back { font-size: 20px; color: #90caf9; line-height: 1; text-decoration: none; opacity: .7; transition: opacity .15s; }
+            .ci-back:hover { opacity: 1; color: #fff; }
             .ci-layout {
                 display: flex;
                 gap: 24px;
@@ -3813,9 +3815,12 @@ function ss_control_ingreso_render( string $state, int $event_id, string $token 
         </div>
     <?php else : ?>
         <header class="ci-header">
-            <div>
-                <h1>Control de Ingreso</h1>
-                <span class="ci-event"><?php echo esc_html( $event_title ); ?></span>
+            <div style="display:flex;align-items:center;gap:12px;">
+                <a href="<?php echo esc_url( home_url( '/box-office/' . $event_id . '/' ) ); ?>" class="ci-back" title="Volver al Box Office">&#8592;</a>
+                <div>
+                    <h1>Control de Ingreso</h1>
+                    <span class="ci-event"><?php echo esc_html( $event_title ); ?></span>
+                </div>
             </div>
             <div class="ci-counter">
                 Ingresados: <span class="ci-counter-num" id="ci-count"><?php
@@ -7725,13 +7730,13 @@ function ss_boxoffice_log( int $event_id, string $usuario, string $accion, array
 
 // ── Reservas manuales (estado reservado_manual) ──────────────────────────────
 
-function ss_seats_manual_reserve( int $event_id, array $seats, string $user, string $nombre = '' ): void {
+function ss_seats_manual_reserve( int $event_id, array $seats, string $user, string $nombre = '', string $telefono = '' ): void {
     global $wpdb;
     $manual = get_post_meta( $event_id, '_ss_manual_reserved_seats', true );
     if ( ! is_array( $manual ) ) { $manual = array(); }
     $now = time();
     foreach ( $seats as $seat ) {
-        $manual[ (string) $seat ] = array( 'user' => $user, 'nombre' => $nombre, 'timestamp' => $now );
+        $manual[ (string) $seat ] = array( 'user' => $user, 'nombre' => $nombre, 'telefono' => $telefono, 'timestamp' => $now );
     }
     update_post_meta( $event_id, '_ss_manual_reserved_seats', $manual );
 
@@ -8830,9 +8835,10 @@ function ss_boxoffice_ajax_reserve(): void {
         wp_send_json_error( 'Sillas no disponibles: ' . implode( ', ', $conflict ) );
     }
 
-    $nombre_reserva = sanitize_text_field( wp_unslash( $_POST['reserve_nombre'] ?? '' ) );
+    $nombre_reserva   = sanitize_text_field( wp_unslash( $_POST['reserve_nombre'] ?? '' ) );
+    $telefono_reserva = sanitize_text_field( wp_unslash( $_POST['reserve_telefono'] ?? '' ) );
 
-    ss_seats_manual_reserve( $event_id, $seats, $user, $nombre_reserva );
+    ss_seats_manual_reserve( $event_id, $seats, $user, $nombre_reserva, $telefono_reserva );
     $accion_log = $nombre_reserva ? 'reservar a nombre de ' . $nombre_reserva : 'reservar';
     ss_boxoffice_log( $event_id, $user, $accion_log, $seats );
     ss_litespeed_purge_event( $event_id );
@@ -9125,6 +9131,45 @@ function ss_boxoffice_ajax_get_log(): void {
     ), ARRAY_A );
 
     wp_send_json_success( array( 'log' => $rows ? $rows : array() ) );
+}
+
+// ── Box Office: obtener reservas manuales agrupadas ──────────────────────────
+add_action( 'wp_ajax_ss_boxoffice_get_reservations',       'ss_boxoffice_ajax_get_reservations' );
+add_action( 'wp_ajax_nopriv_ss_boxoffice_get_reservations', 'ss_boxoffice_ajax_get_reservations' );
+
+function ss_boxoffice_ajax_get_reservations(): void {
+    $event_id = (int) ( $_POST['event_id'] ?? 0 );
+    check_ajax_referer( 'ss_boxoffice_nonce', 'nonce' );
+
+    $user = ss_boxoffice_check_auth();
+    if ( ! $user ) { wp_send_json_error( 'No autorizado', 401 ); }
+    if ( ! $event_id ) { wp_send_json_error( 'Evento no válido' ); }
+
+    $manual = get_post_meta( $event_id, '_ss_manual_reserved_seats', true );
+    if ( ! is_array( $manual ) ) { $manual = array(); }
+
+    // Agrupar por nombre + teléfono (una misma persona puede reservar en llamadas distintas)
+    $groups = array();
+    foreach ( $manual as $seat_id => $info ) {
+        $nombre   = $info['nombre']   ?? '';
+        $telefono = $info['telefono'] ?? '';
+        $key      = $nombre . '|' . $telefono;
+        if ( ! isset( $groups[ $key ] ) ) {
+            $groups[ $key ] = array(
+                'nombre'    => $nombre,
+                'telefono'  => $telefono,
+                'seats'     => array(),
+                'timestamp' => $info['timestamp'] ?? 0,
+            );
+        }
+        $groups[ $key ]['seats'][]  = $seat_id;
+        $groups[ $key ]['timestamp'] = min( $groups[ $key ]['timestamp'], $info['timestamp'] ?? 0 );
+    }
+
+    $reservations = array_values( $groups );
+    usort( $reservations, function ( $a, $b ) { return $b['timestamp'] <=> $a['timestamp']; } );
+
+    wp_send_json_success( array( 'reservations' => $reservations ) );
 }
 
 // ── Box Office: obtener pedidos activos del evento ───────────────────────────
@@ -9581,6 +9626,7 @@ function ss_boxoffice_handle_desktop(): void {
 function ss_boxoffice_render( string $view, int $event_id, string $message = '', string $user = '' ): void {
     $event_title = get_the_title( $event_id ) ?: 'Evento #' . $event_id;
     $plugin_url  = plugin_dir_url( __FILE__ );
+    $plugin_path = plugin_dir_path( __FILE__ );
 
     // Layout data para la vista app
     $layout_json = '{}';
@@ -9589,8 +9635,15 @@ function ss_boxoffice_render( string $view, int $event_id, string $message = '',
 
     $sale_mode    = 'seat';
     $ticket_types_data = array();
+    $checkin_url  = '';
 
     if ( $view === 'app' ) {
+        $checkin_token = get_post_meta( $event_id, '_ss_event_checkin_token', true );
+        if ( ! $checkin_token ) {
+            $checkin_token = wp_generate_password( 32, false );
+            update_post_meta( $event_id, '_ss_event_checkin_token', $checkin_token );
+        }
+        $checkin_url = home_url( '/control-ingreso/' . $event_id . '/?token=' . $checkin_token );
         $layout_raw = get_post_meta( $event_id, '_ss_layout', true );
         $layout_decoded = is_array( $layout_raw ) ? $layout_raw : ( is_string( $layout_raw ) ? json_decode( $layout_raw, true ) : array() );
         if ( ! is_array( $layout_decoded ) ) { $layout_decoded = array(); }
@@ -9739,6 +9792,9 @@ a{color:#64b5f6;text-decoration:none}
 .bo-header__logout:hover{color:#ef5350}
 .bo-header__back{font-size:20px;color:#90caf9;line-height:1;text-decoration:none;opacity:.7;transition:opacity .15s}
 .bo-header__back:hover{opacity:1;color:#fff}
+.bo-header__scan{display:inline-flex;align-items:center;gap:4px;padding:6px 12px;border-radius:8px;background:#7c3aed;color:#fff;font-size:12px;font-weight:600;text-decoration:none;transition:background .15s,transform .1s}
+.bo-header__scan:hover{background:#6d28d9;color:#fff}
+.bo-header__scan:active{transform:scale(.95)}
 
 .bo-body{display:flex;height:calc(100vh - 54px);overflow:hidden}
 .bo-map{flex:1;position:relative;display:flex;flex-direction:column}
@@ -9757,6 +9813,7 @@ a{color:#64b5f6;text-decoration:none}
 .bo-toolbar__action--sell:hover{background:#1b5e20}
 .bo-toolbar__action--release{background:#e65100;color:#fff}
 .bo-toolbar__action--release:hover{background:#bf360c}
+.bo-toolbar__mode:active,.bo-toolbar__action:active{transform:scale(.95)}
 
 /* ── Zone qty controls ─────────────────────────── */
 .bo-zone-tickets{padding:12px;display:flex;flex-direction:column;gap:10px}
@@ -9777,6 +9834,7 @@ a{color:#64b5f6;text-decoration:none}
 .bo-sidebar__tabs{display:flex;border-bottom:1px solid #2a2a4a}
 .bo-sidebar__tab{flex:1;padding:10px 8px;font-size:13px;font-weight:600;color:#888;background:none;border:none;cursor:pointer;border-bottom:2px solid transparent;transition:all .2s}
 .bo-sidebar__tab.active{color:#fff;border-bottom-color:#7c3aed}
+.bo-sidebar__tab:active{transform:scale(.96)}
 .bo-sidebar__tab:hover:not(.active){color:#bbb}
 .bo-order{padding:10px 12px;border-radius:8px;margin-bottom:6px;background:rgba(255,255,255,.03);border:1px solid #2a2a4a}
 .bo-order__header{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
@@ -9792,7 +9850,21 @@ a{color:#64b5f6;text-decoration:none}
 .bo-order__cancel:disabled{opacity:.5;cursor:not-allowed}
 .bo-order__qr-btn{padding:5px 12px;border-radius:6px;border:1px solid #1565c0;background:rgba(21,101,192,.15);color:#90caf9;font-size:11px;font-weight:600;cursor:pointer;transition:all .15s}
 .bo-order__qr-btn:hover{background:#1565c0;color:#fff}
-.bo-sidebar__list{flex:1;overflow-y:auto;padding:8px}
+.bo-order__cancel:active,.bo-order__qr-btn:active{transform:scale(.95)}
+
+/* ── Reservas ───────────────────────────────────── */
+.bo-reservation{padding:10px 12px;border-radius:8px;margin-bottom:6px;background:rgba(144,202,249,.06);border:1px solid #2a2a4a}
+.bo-reservation__name{font-size:13px;font-weight:700;color:#fff}
+.bo-reservation__phone{font-size:11px;color:#90caf9;margin-bottom:2px}
+.bo-reservation__seats{font-size:11px;color:#90caf9;margin-bottom:2px}
+.bo-reservation__actions{margin-top:8px;display:flex;gap:6px}
+.bo-reservation__sell{padding:5px 12px;border-radius:6px;border:1px solid #2e7d32;background:rgba(46,125,50,.15);color:#81c784;font-size:11px;font-weight:600;cursor:pointer;transition:all .15s}
+.bo-reservation__sell:hover{background:#2e7d32;color:#fff}
+.bo-reservation__release{padding:5px 12px;border-radius:6px;border:1px solid #e65100;background:rgba(230,81,0,.15);color:#ffb74d;font-size:11px;font-weight:600;cursor:pointer;transition:all .15s}
+.bo-reservation__release:hover{background:#e65100;color:#fff}
+.bo-reservation{transition:all .15s}
+.bo-reservation__sell:active,.bo-reservation__release:active{transform:scale(.95)}
+.bo-sidebar__list{flex:1;overflow-y:auto;padding:8px;animation:boFadeIn .18s ease}
 .bo-sidebar__item{padding:8px 10px;border-radius:6px;margin-bottom:4px;font-size:12px;line-height:1.5}
 .bo-sidebar__item--reservar{background:rgba(25,118,210,.15);border-left:3px solid #1976d2}
 .bo-sidebar__item--vender{background:rgba(46,125,50,.15);border-left:3px solid #2e7d32}
@@ -9831,27 +9903,33 @@ a{color:#64b5f6;text-decoration:none}
 .bo-transfer__info-row{margin-bottom:6px;font-size:13px}
 .bo-transfer__label{display:block;font-size:12px;color:#aaa;margin:10px 0 4px}
 .bo-transfer select,.bo-transfer input[type=text]{width:100%;padding:8px 10px;background:#16213e;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;box-sizing:border-box}
-.bo-transfer__confirm-btn{width:100%;margin-top:14px;padding:10px;background:#7c3aed;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer}
+.bo-transfer__confirm-btn{width:100%;margin-top:14px;padding:10px;background:#7c3aed;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:all .15s}
 .bo-transfer__confirm-btn:hover{background:#6d28d9}
+.bo-transfer__confirm-btn:active,.bo-transfer__search button:active{transform:scale(.96)}
 
 /* ── Seat tooltip ───────────────────────────────── */
 .bo-seat-tooltip{position:fixed;z-index:9999;background:#1a1a2e;color:#90caf9;border:1px solid #1976d2;border-radius:6px;padding:4px 10px;font-size:12px;pointer-events:none;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.5)}
+.bo-seat-tooltip--tap{animation:boSeatInfoIn .15s ease}
+@keyframes boSeatInfoIn{from{opacity:0;transform:scale(.9)}to{opacity:1;transform:scale(1)}}
 
 /* ── Sell modal ─────────────────────────────────── */
-.bo-modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;align-items:center;justify-content:center;padding:20px}
-.bo-modal-overlay.open{display:flex}
-.bo-modal{background:#1a1a2e;border:1px solid #2a2a4a;border-radius:16px;padding:30px;width:100%;max-width:440px}
+.bo-modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto}
+.bo-modal-overlay.open{display:flex;animation:boOverlayIn .18s ease}
+.bo-modal{background:#1a1a2e;border:1px solid #2a2a4a;border-radius:16px;padding:30px;width:100%;max-width:440px;max-height:calc(100vh - 40px);overflow-y:auto;margin:auto 0;animation:boModalIn .2s cubic-bezier(.2,.9,.3,1.2)}
+@keyframes boOverlayIn{from{opacity:0}to{opacity:1}}
+@keyframes boModalIn{from{opacity:0;transform:scale(.94) translateY(6px)}to{opacity:1;transform:scale(1) translateY(0)}}
 .bo-modal h2{font-size:18px;color:#fff;margin-bottom:16px}
 .bo-modal label{display:block;font-size:13px;color:#aaa;margin-bottom:4px;margin-top:12px}
 .bo-modal input,.bo-modal select{width:100%;padding:10px 14px;border:1px solid #333;border-radius:8px;background:#16213e;color:#fff;font-size:14px;outline:none}
 .bo-modal input:focus,.bo-modal select:focus{border-color:#64b5f6}
 .bo-modal__seats{font-size:13px;color:#90caf9;margin-bottom:8px}
 .bo-modal__actions{display:flex;gap:10px;margin-top:20px}
-.bo-modal__actions button{flex:1;padding:10px;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer}
+.bo-modal__actions button{flex:1;padding:10px;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:all .15s}
 .bo-modal__cancel{background:#333;color:#ccc}
 .bo-modal__cancel:hover{background:#444}
 .bo-modal__confirm{background:#2e7d32;color:#fff}
 .bo-modal__confirm:hover{background:#1b5e20}
+.bo-modal__actions button:active{transform:scale(.96)}
 
 /* ── Valor cobrado ──────────────────────────────── */
 .bo-valor-cobrado{background:#111827;border:1px solid #2a2a4a;border-radius:10px;padding:14px 16px;margin-top:16px}
@@ -9863,19 +9941,20 @@ a{color:#64b5f6;text-decoration:none}
 .bo-valor__ref{display:block;color:#6b7280;font-size:11px;margin-top:6px}
 
 /* ── Success modal ──────────────────────────────── */
-.bo-success-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:1000;align-items:center;justify-content:center;padding:20px}
-.bo-success-overlay.open{display:flex}
-.bo-success{background:#1a1a2e;border:1px solid #2a2a4a;border-radius:16px;padding:30px;width:100%;max-width:420px;text-align:center}
+.bo-success-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:1000;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto}
+.bo-success-overlay.open{display:flex;animation:boOverlayIn .18s ease}
+.bo-success{background:#1a1a2e;border:1px solid #2a2a4a;border-radius:16px;padding:30px;width:100%;max-width:420px;max-height:calc(100vh - 40px);overflow-y:auto;margin:auto 0;text-align:center;animation:boModalIn .2s cubic-bezier(.2,.9,.3,1.2)}
 .bo-success h2{color:#81c784;font-size:20px;margin-bottom:16px}
 .bo-success__detail{font-size:13px;color:#ccc;line-height:1.8;margin-bottom:16px;text-align:left}
 .bo-success__detail strong{color:#fff}
 .bo-success__qr{margin:16px auto;background:#fff;padding:12px;border-radius:10px;display:inline-block}
 .bo-success__actions{display:flex;gap:10px;margin-top:20px}
-.bo-success__actions button{flex:1;padding:10px;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer}
+.bo-success__actions button{flex:1;padding:10px;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:all .15s}
 .bo-success__download{background:#1976d2;color:#fff}
 .bo-success__download:hover{background:#1565c0}
 .bo-success__close{background:#333;color:#ccc}
 .bo-success__close:hover{background:#444}
+.bo-success__actions button:active{transform:scale(.96)}
 
 /* ── Toast ──────────────────────────────────────── */
 .bo-toast{position:fixed;top:20px;right:20px;z-index:2000;max-width:400px}
@@ -9889,10 +9968,21 @@ a{color:#64b5f6;text-decoration:none}
   .bo-sidebar{width:240px}
 }
 @media(max-width:680px){
-  .bo-body{flex-direction:column}
-  .bo-sidebar{width:100%;max-height:200px;border-left:none;border-top:1px solid #2a2a4a}
-  .bo-map__canvas{margin:8px}
-  .bo-toolbar{justify-content:center}
+  .bo-header{padding:10px 12px}
+  .bo-header__title{font-size:14px}
+  .bo-header__event{font-size:12px}
+  .bo-body{flex-direction:column;height:calc(100vh - 54px)}
+  .bo-map{flex:1 1 auto;min-height:0;overflow:hidden}
+  .bo-sidebar{width:100%;flex:0 0 42vh;max-height:42vh;border-left:none;border-top:1px solid #2a2a4a}
+  .bo-legend{padding:4px 8px;gap:8px;font-size:10px}
+  #bo-floor-tabs{margin-bottom:2px !important}
+  .bo-map__canvas{margin:6px;min-height:0}
+  .bo-zone-tickets{padding:6px}
+  .bo-toolbar{justify-content:center;padding:8px;flex-shrink:0}
+  .bo-toolbar__mode{padding:10px 14px;min-height:44px}
+  .bo-toolbar__action{padding:10px 16px;min-height:44px}
+  .bo-sidebar__tab{padding:12px 6px;min-height:44px}
+  .bo-seat-tooltip{max-width:80vw;white-space:normal}
 }
 </style>
 </head>
@@ -10044,6 +10134,9 @@ a{color:#64b5f6;text-decoration:none}
         </div>
     </div>
     <div class="bo-header__right">
+        <?php if ( ! empty( $checkin_url ) ) : ?>
+        <a href="<?php echo esc_url( $checkin_url ); ?>" class="bo-header__scan" title="Escanear entradas de este evento">&#128247; Escanear</a>
+        <?php endif; ?>
         <span class="bo-header__user"><?php echo esc_html( $user ); ?></span>
         <a href="?logout=1" class="bo-header__logout">Cerrar sesión</a>
     </div>
@@ -10095,6 +10188,7 @@ a{color:#64b5f6;text-decoration:none}
         <div class="bo-sidebar__tabs">
             <button type="button" class="bo-sidebar__tab active" data-panel="bo-log-list">Actividad</button>
             <button type="button" class="bo-sidebar__tab" data-panel="bo-orders-list">Pedidos</button>
+            <button type="button" class="bo-sidebar__tab" data-panel="bo-reservations-list">Reservas</button>
             <button type="button" class="bo-sidebar__tab" data-panel="bo-transfer-panel">Traslado</button>
             <button type="button" class="bo-sidebar__tab" data-panel="bo-stats-panel">Capacidad</button>
         </div>
@@ -10113,6 +10207,9 @@ a{color:#64b5f6;text-decoration:none}
         </div>
         <div class="bo-sidebar__list" id="bo-orders-list" style="display:none">
             <div style="padding:20px;text-align:center;color:#666;font-size:13px">Cargando pedidos...</div>
+        </div>
+        <div class="bo-sidebar__list" id="bo-reservations-list" style="display:none">
+            <div style="padding:20px;text-align:center;color:#666;font-size:13px">Cargando reservas...</div>
         </div>
         <div class="bo-sidebar__list bo-transfer-panel" id="bo-transfer-panel" style="display:none">
             <div class="bo-transfer">
@@ -10201,6 +10298,8 @@ a{color:#64b5f6;text-decoration:none}
         <div class="bo-modal__seats" id="bo-reserve-seats"></div>
         <label for="bo-reserve-nombre">Nombre de reserva *</label>
         <input type="text" id="bo-reserve-nombre" placeholder="Ej: Juan Pérez" autocomplete="off">
+        <label for="bo-reserve-telefono">Teléfono</label>
+        <input type="text" id="bo-reserve-telefono" placeholder="Ej: 300 123 4567" autocomplete="off">
         <div class="bo-modal__actions">
             <button class="bo-modal__cancel" id="bo-reserve-cancel">Cancelar</button>
             <button class="bo-modal__confirm" id="bo-reserve-confirm">Reservar</button>
@@ -10225,8 +10324,8 @@ a{color:#64b5f6;text-decoration:none}
 <div class="bo-toast" id="bo-toast"></div>
 
 <!-- Scripts -->
-<script src="<?php echo esc_url( $plugin_url . 'assets/js/konva.min.js' ); ?>"></script>
-<script src="<?php echo esc_url( $plugin_url . 'assets/js/seat-engine.js' ); ?>"></script>
+<script src="<?php echo esc_url( $plugin_url . 'assets/js/konva.min.js?v=' . filemtime( $plugin_path . 'assets/js/konva.min.js' ) ); ?>"></script>
+<script src="<?php echo esc_url( $plugin_url . 'assets/js/seat-engine.js?v=' . filemtime( $plugin_path . 'assets/js/seat-engine.js' ) ); ?>"></script>
 <script>
 window.ssLayoutData     = <?php echo $layout_json; ?>;
 window.ssBoxOfficeState = <?php echo $state_json; ?>;
@@ -10236,7 +10335,7 @@ var SS_BoxOffice = {
     nonce:    <?php echo wp_json_encode( wp_create_nonce( 'ss_boxoffice_nonce' ) ); ?>
 };
 </script>
-<script src="<?php echo esc_url( $plugin_url . 'assets/js/ss-boxoffice.js' ); ?>"></script>
+<script src="<?php echo esc_url( $plugin_url . 'assets/js/ss-boxoffice.js?v=' . filemtime( $plugin_path . 'assets/js/ss-boxoffice.js' ) ); ?>"></script>
 <script>
 (function(){
     var correoInput = document.getElementById('bo-sell-correo');

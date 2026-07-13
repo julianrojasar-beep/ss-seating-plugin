@@ -114,10 +114,12 @@
     refreshState();
     refreshLog();
     refreshOrders();
+    refreshReservations();
     setInterval(function () {
       refreshState();
       refreshLog();
       refreshOrders();
+      refreshReservations();
     }, POLL_INTERVAL);
   }
 
@@ -409,13 +411,26 @@
     if (!node) return;
 
     // Rules based on mode
+    var blocked = false;
     if (currentMode === 'reservar') {
-      if (soldSet[seatId] || reservedSet[seatId] || manualSet[seatId]) return;
+      blocked = !!(soldSet[seatId] || reservedSet[seatId] || manualSet[seatId]);
     } else if (currentMode === 'vender') {
-      if (soldSet[seatId] || reservedSet[seatId]) return;
+      blocked = !!(soldSet[seatId] || reservedSet[seatId]);
       // manual_reserved is selectable (we'll sell them)
     } else if (currentMode === 'liberar') {
-      if (!manualSet[seatId]) return; // only manual
+      blocked = !manualSet[seatId]; // only manual
+    }
+    if (blocked) {
+      // Tap/click en silla no accionable en este modo: mostrar quién la tiene (reemplaza el hover en touch)
+      // Tocar la misma silla que ya está mostrando info la deselecciona; tocar otra cambia el resaltado.
+      if (_highlightedSeatId === seatId) {
+        hideSeatTooltip();
+        return;
+      }
+      var info = (manualSet[seatId] && manualInfo[seatId]) ? manualInfo[seatId]
+               : (soldSet[seatId] && soldInfo[seatId]) ? soldInfo[seatId] : '';
+      if (info) { showSeatInfoPopover(info, e, seatId, node); }
+      return;
     }
 
     // In hybrid mode, check zone availability before adding
@@ -614,11 +629,11 @@
       .then(function (r) { return r.json(); });
   }
 
-  function doReserve(nombre) {
+  function doReserve(nombre, telefono) {
     var btn = document.getElementById('bo-action-btn');
     if (btn) { btn.disabled = true; btn.textContent = 'Reservando...'; }
 
-    ajaxPost('reserve', { reserve_nombre: nombre || '' }).then(function (res) {
+    ajaxPost('reserve', { reserve_nombre: nombre || '', reserve_telefono: telefono || '' }).then(function (res) {
       if (res.success) {
         showToast(res.data.message, 'success');
       } else {
@@ -628,6 +643,7 @@
       clearSelection();
       refreshState();
       refreshLog();
+      refreshReservations();
       updateActionButton();
     }).catch(function () {
       showToast('Error de conexión', 'error');
@@ -649,6 +665,7 @@
       clearSelection();
       refreshState();
       refreshLog();
+      refreshReservations();
       updateActionButton();
     }).catch(function () {
       showToast('Error de conexión', 'error');
@@ -678,6 +695,8 @@
       resetZoneTicketQtys();
       refreshState();
       refreshLog();
+      refreshOrders();
+      refreshReservations();
       updateActionButton();
       if (btn) { btn.disabled = false; btn.textContent = 'Crear pedido'; }
     }).catch(function () {
@@ -699,6 +718,8 @@
     }
     var inp = document.getElementById('bo-reserve-nombre');
     if (inp) { inp.value = ''; }
+    var telInp = document.getElementById('bo-reserve-telefono');
+    if (telInp) { telInp.value = ''; }
     modal.classList.add('open');
     if (inp) { inp.focus(); }
   }
@@ -717,11 +738,13 @@
     if (confirm) {
       confirm.addEventListener('click', function () {
         var nombre = (document.getElementById('bo-reserve-nombre').value || '').trim();
+        var telInp = document.getElementById('bo-reserve-telefono');
+        var telefono = telInp ? (telInp.value || '').trim() : '';
         if (!nombre) {
           showToast('Ingresa el nombre de la reserva', 'error');
           return;
         }
-        doReserve(nombre);
+        doReserve(nombre, telefono);
       });
     }
   }
@@ -1137,6 +1160,82 @@
   function hideSeatTooltip() {
     if (_tooltip) { _tooltip.remove(); _tooltip = null; }
     document.removeEventListener('mousemove', _moveSeatTooltip);
+    _revertSeatHighlight();
+  }
+
+  // Resaltado temporal del asiento consultado por tap (mientras se muestra el popover)
+  var _highlightedSeatId = null;
+  var _highlightedNode   = null;
+  function _revertSeatHighlight() {
+    if (_highlightedNode && _highlightedSeatId) {
+      applySeatColor(_highlightedSeatId, _highlightedNode);
+      if (seatLayer) seatLayer.batchDraw();
+    }
+    _highlightedNode   = null;
+    _highlightedSeatId = null;
+  }
+  function _applySeatHighlight(seatId, node) {
+    if (!node || !node.circle) return;
+    _highlightedSeatId = seatId;
+    _highlightedNode   = node;
+    node.circle.stroke('#ffd54f');
+    node.circle.strokeWidth(3);
+    if (seatLayer) seatLayer.batchDraw();
+    // Pequeño "ping" — como si se estuviera consultando el dato del asiento
+    if (typeof Konva !== 'undefined' && Konva.Tween) {
+      new Konva.Tween({
+        node: node.circle, duration: 0.12, scaleX: 1.2, scaleY: 1.2,
+        easing: Konva.Easings.EaseOut,
+        onFinish: function () {
+          new Konva.Tween({ node: node.circle, duration: 0.15, scaleX: 1, scaleY: 1, easing: Konva.Easings.EaseIn }).play();
+        }
+      }).play();
+    }
+  }
+
+  // Popover fijo para tap/click (touch no dispara mouseenter/mouseleave)
+  var _popoverHideTimer = null;
+  var _popoverGen = 0;
+  function showSeatInfoPopover(text, konvaEvent, seatId, node) {
+    hideSeatTooltip();
+    if (_popoverHideTimer) { clearTimeout(_popoverHideTimer); _popoverHideTimer = null; }
+
+    if (seatId && node) { _applySeatHighlight(seatId, node); }
+
+    var evt = konvaEvent && konvaEvent.evt;
+    var x = window.innerWidth / 2, y = window.innerHeight / 2;
+    if (evt) {
+      if (evt.changedTouches && evt.changedTouches.length) {
+        x = evt.changedTouches[0].clientX;
+        y = evt.changedTouches[0].clientY;
+      } else if (typeof evt.clientX === 'number') {
+        x = evt.clientX;
+        y = evt.clientY;
+      }
+    }
+
+    _tooltip = document.createElement('div');
+    _tooltip.className = 'bo-seat-tooltip bo-seat-tooltip--tap';
+    _tooltip.textContent = text;
+    document.body.appendChild(_tooltip);
+    // Clamp para que no se salga de la pantalla
+    var left = Math.min(Math.max(x + 12, 8), window.innerWidth - _tooltip.offsetWidth - 8);
+    var top  = Math.min(Math.max(y - 36, 8), window.innerHeight - _tooltip.offsetHeight - 8);
+    _tooltip.style.left = left + 'px';
+    _tooltip.style.top  = top + 'px';
+    _tooltip.style.pointerEvents = 'none';
+
+    // Generación: si se abre un popover nuevo antes de que este se cierre solo,
+    // los cierres pendientes de este (timeout / tap-afuera) deben ignorarse.
+    _popoverGen++;
+    var myGen = _popoverGen;
+    var dismissIfCurrent = function () { if (_popoverGen === myGen) { hideSeatTooltip(); } };
+
+    _popoverHideTimer = setTimeout(dismissIfCurrent, 3000);
+    setTimeout(function () {
+      document.addEventListener('click', dismissIfCurrent, { once: true });
+      document.addEventListener('touchstart', dismissIfCurrent, { once: true });
+    }, 0);
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1336,6 +1435,17 @@
       fillColor = baseColor; strokeColor = 'black'; textColor = 'white';
     }
 
+    // Hit-area invisible más grande que el círculo visual — el radio visual (15px/30px
+    // diámetro) queda por debajo del mínimo táctil recomendado (~44px) para dedos.
+    var hitCircle = new Konva.Circle({
+      x:         seat.x,
+      y:         seat.y,
+      radius:    SEAT_RADIUS + 7,
+      opacity:   0,
+      listening: true,
+      seatId:    seat.id,
+    });
+
     var circle = new Konva.Circle({
       x:           seat.x,
       y:           seat.y,
@@ -1363,26 +1473,24 @@
     // Pointer cursor + tooltip para sillas con reserva manual
     if (saleMode !== 'zone') {
       var sId = seat.id;
-      circle.on('mouseenter', function () {
-        circle.getStage().container().style.cursor = 'pointer';
-        if (manualSet[sId] && manualInfo[sId]) { showSeatTooltip(manualInfo[sId], circle); }
-        else if (soldSet[sId] && soldInfo[sId]) { showSeatTooltip(soldInfo[sId], circle); }
-      });
-      circle.on('mouseleave', function () {
-        circle.getStage().container().style.cursor = '';
+      var onEnter = function (target) {
+        target.getStage().container().style.cursor = 'pointer';
+        if (manualSet[sId] && manualInfo[sId]) { showSeatTooltip(manualInfo[sId], target); }
+        else if (soldSet[sId] && soldInfo[sId]) { showSeatTooltip(soldInfo[sId], target); }
+      };
+      var onLeave = function (target) {
+        target.getStage().container().style.cursor = '';
         hideSeatTooltip();
-      });
-      label.on('mouseenter', function () {
-        label.getStage().container().style.cursor = 'pointer';
-        if (manualSet[sId] && manualInfo[sId]) { showSeatTooltip(manualInfo[sId], label); }
-        else if (soldSet[sId] && soldInfo[sId]) { showSeatTooltip(soldInfo[sId], label); }
-      });
-      label.on('mouseleave', function () {
-        label.getStage().container().style.cursor = '';
-        hideSeatTooltip();
-      });
+      };
+      hitCircle.on('mouseenter', function () { onEnter(hitCircle); });
+      hitCircle.on('mouseleave', function () { onLeave(hitCircle); });
+      circle.on('mouseenter', function () { onEnter(circle); });
+      circle.on('mouseleave', function () { onLeave(circle); });
+      label.on('mouseenter', function () { onEnter(label); });
+      label.on('mouseleave', function () { onLeave(label); });
     }
 
+    group.add(hitCircle);
     group.add(circle);
     group.add(label);
 
@@ -1684,6 +1792,84 @@
         btn.disabled = false;
         btn.textContent = 'Cancelar pedido';
       });
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  //  RESERVATIONS LIST
+  // ═══════════════════════════════════════════════════════════════
+
+  var reservationsCache = [];
+
+  function refreshReservations() {
+    var fd = new FormData();
+    fd.append('action', 'ss_boxoffice_get_reservations');
+    fd.append('nonce', getNonce());
+    fd.append('event_id', bo.eventId);
+    fd.append('bo_user', bo.user);
+
+    fetch(bo.ajaxUrl, { method: 'POST', body: fd, credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (res) {
+        if (!res.success) return;
+        var list = document.getElementById('bo-reservations-list');
+        if (!list) return;
+
+        reservationsCache = res.data.reservations || [];
+        if (!reservationsCache.length) {
+          list.innerHTML = '<div style="padding:20px;text-align:center;color:#666;font-size:13px">Sin reservas pendientes</div>';
+          return;
+        }
+
+        var html = '';
+        for (var i = 0; i < reservationsCache.length; i++) {
+          var r = reservationsCache[i];
+          html += '<div class="bo-reservation">';
+          html += '<div class="bo-reservation__name">' + escHtml(r.nombre || '(sin nombre)') + '</div>';
+          if (r.telefono) {
+            html += '<div class="bo-reservation__phone">' + escHtml(r.telefono) + '</div>';
+          }
+          html += '<div class="bo-reservation__seats">Sillas: ' + escHtml(r.seats.join(', ')) + '</div>';
+          html += '<div class="bo-reservation__actions">';
+          html += '<button type="button" class="bo-reservation__sell" data-idx="' + i + '">Vender</button>';
+          html += '<button type="button" class="bo-reservation__release" data-idx="' + i + '">Liberar</button>';
+          html += '</div>';
+          html += '</div>';
+        }
+        list.innerHTML = html;
+
+        list.querySelectorAll('.bo-reservation__sell').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var r = reservationsCache[parseInt(btn.getAttribute('data-idx'), 10)];
+            if (!r) return;
+            sellReservation(r);
+          });
+        });
+        list.querySelectorAll('.bo-reservation__release').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var r = reservationsCache[parseInt(btn.getAttribute('data-idx'), 10)];
+            if (!r) return;
+            releaseReservation(r);
+          });
+        });
+      })
+      .catch(function () { /* silent */ });
+  }
+
+  function sellReservation(reservation) {
+    selectedSeats = reservation.seats.slice();
+    openSellModal();
+    var nombreInp = document.getElementById('bo-sell-nombre');
+    if (nombreInp) { nombreInp.value = reservation.nombre || ''; }
+    var telInp = document.getElementById('bo-sell-telefono');
+    if (telInp) { telInp.value = reservation.telefono || ''; }
+  }
+
+  function releaseReservation(reservation) {
+    if (!confirm('¿Liberar las sillas de ' + (reservation.nombre || 'esta reserva') + '?\n\nSillas: ' + reservation.seats.join(', '))) {
+      return;
+    }
+    selectedSeats = reservation.seats.slice();
+    doRelease();
   }
 
   // ═══════════════════════════════════════════════════════════════
