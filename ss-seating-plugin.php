@@ -3,7 +3,7 @@
  * Plugin Name: SS Seating
  * Plugin URI: https://tusitio.com
  * Description: Sistema de selección de sillas y venta de boletas con QR para eventos.
- * Version: 1.3.13
+ * Version: 1.3.14
  * Author: Julian Rojas
  * Author URI: https://tusitio.com
  * License: GPL v2 or later
@@ -114,6 +114,12 @@ add_filter( 'template_include', 'ss_event_override_template', 99 );
 function ss_event_override_template( $template ) {
     if ( is_singular( 'ss_event' ) ) {
         $plugin_template = plugin_dir_path( __FILE__ ) . 'templates/single-ss-event.php';
+        if ( file_exists( $plugin_template ) ) {
+            return $plugin_template;
+        }
+    }
+    if ( is_post_type_archive( 'ss_event' ) ) {
+        $plugin_template = plugin_dir_path( __FILE__ ) . 'templates/archive-ss-event.php';
         if ( file_exists( $plugin_template ) ) {
             return $plugin_template;
         }
@@ -929,13 +935,19 @@ function ss_events_shortcode( $atts = array() ) {
         'past'     => 'yes',
     ), $atts, 'ss_events' );
 
-    $now = current_time( 'Y-m-d H:i:s' );
+    return ss_render_events_archive( (int) $atts['limit'], $atts['past'] === 'yes' );
+}
 
+/**
+ * Renderiza el listado de eventos (próximos + pasados) con el diseño de tarjetas.
+ * Usado por el shortcode [ss_events] y por la plantilla del archivo nativo del CPT.
+ */
+function ss_render_events_archive( int $limit = -1, bool $include_past = true ): string {
     // Próximos eventos (fecha >= hoy), ordenados por fecha ASC
     $upcoming = get_posts( array(
         'post_type'      => 'ss_event',
         'post_status'    => 'publish',
-        'posts_per_page' => (int) $atts['limit'],
+        'posts_per_page' => $limit,
         'meta_key'       => '_ss_event_date',
         'orderby'        => 'meta_value',
         'order'          => 'ASC',
@@ -949,11 +961,11 @@ function ss_events_shortcode( $atts = array() ) {
 
     // Eventos pasados (fecha < hoy), ordenados por fecha DESC
     $past = array();
-    if ( $atts['past'] === 'yes' ) {
+    if ( $include_past ) {
         $past = get_posts( array(
             'post_type'      => 'ss_event',
             'post_status'    => 'publish',
-            'posts_per_page' => (int) $atts['limit'],
+            'posts_per_page' => $limit,
             'meta_key'       => '_ss_event_date',
             'orderby'        => 'meta_value',
             'order'          => 'DESC',
@@ -3923,6 +3935,10 @@ function ss_control_ingreso_render( string $state, int $event_id, string $token 
 
 register_activation_hook( __FILE__, 'ss_plugin_activate' );
 
+// Sitios que actualizan desde una versión sin la página "Eventos" también la reciben,
+// sin necesidad de desactivar/reactivar el plugin.
+add_action( 'admin_init', 'ss_create_events_page' );
+
 function ss_plugin_activate(): void {
     ss_checkin_rewrite_rule();
     ss_boxoffice_rewrite_rule();
@@ -3930,12 +3946,35 @@ function ss_plugin_activate(): void {
     ss_leads_create_table();
     ss_boxoffice_create_log_table();
     ss_seat_ledger_create_table();
+    ss_create_events_page();
 
     // Programar cron de limpieza de reservas temporales
     if ( ! wp_next_scheduled( 'ss_temp_reserved_cleanup' ) ) {
         wp_schedule_event( time(), 'every_minute', 'ss_temp_reserved_cleanup' );
     }
 
+}
+
+/**
+ * Crea la página "Eventos" con el shortcode [ss_events], si aún no existe.
+ * El ID se guarda en la opción ss_events_page_id para no duplicarla en activaciones futuras.
+ */
+function ss_create_events_page(): void {
+    $existing_id = (int) get_option( 'ss_events_page_id' );
+    if ( $existing_id && get_post( $existing_id ) ) {
+        return;
+    }
+
+    $page_id = wp_insert_post( array(
+        'post_title'   => 'Eventos',
+        'post_content' => '[ss_events]',
+        'post_status'  => 'publish',
+        'post_type'    => 'page',
+    ) );
+
+    if ( $page_id && ! is_wp_error( $page_id ) ) {
+        update_option( 'ss_events_page_id', $page_id );
+    }
 }
 
 /**
