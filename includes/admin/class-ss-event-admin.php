@@ -498,7 +498,7 @@ class SS_Event_Admin {
                 <tr>
                     <th>Porcentaje de descuento (%)</th>
                     <td>
-                        <input type="number" name="ss_group_discount_pct" value="<?php echo esc_attr( $gd_pct ); ?>" min="1" max="100" style="width:80px;">
+                        <input type="number" name="ss_group_discount_pct" value="<?php echo esc_attr( $gd_pct ); ?>" min="0" max="100" style="width:80px;">
                     </td>
                 </tr>
             </table>
@@ -533,7 +533,7 @@ class SS_Event_Admin {
                 <tr id="ss-couple-pct-row" style="<?php echo $cd_type !== 'percentage' ? 'display:none;' : ''; ?>">
                     <th>Porcentaje de descuento (%)</th>
                     <td>
-                        <input type="number" name="ss_couple_discount_pct" value="<?php echo esc_attr( $cd_pct ); ?>" min="1" max="100" style="width:80px;">
+                        <input type="number" name="ss_couple_discount_pct" value="<?php echo esc_attr( $cd_pct ); ?>" min="0" max="100" style="width:80px;">
                     </td>
                 </tr>
                 <tr id="ss-couple-fixed-row" style="<?php echo $cd_type !== 'fixed_price' ? 'display:none;' : ''; ?>">
