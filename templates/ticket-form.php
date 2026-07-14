@@ -59,7 +59,24 @@ $has_map = $layout && in_array( $sale_mode, array( 'seat', 'hybrid', 'general' )
 // Inventario real por zona (sold + reserved descontados)
 $zone_inventory = function_exists( 'ss_get_zone_inventory' ) ? ss_get_zone_inventory( $event_id ) : array();
 
-// Enriquecer ticket_types con disponibilidad real
+// Preventa: ¿aplica ahora mismo?
+$is_presale = class_exists( 'SS_Event_Service' ) ? SS_Event_Service::instance()->is_presale_active( $event_id ) : false;
+
+$presale_end_formatted  = '';
+$presale_end_timestamp  = 0;
+if ( $is_presale ) {
+    $presale_end_raw = get_post_meta( $event_id, '_ss_presale_end_date', true );
+    if ( $presale_end_raw ) {
+        $tz = wp_timezone();
+        $dt = date_create( $presale_end_raw . ' 00:00:00', $tz );
+        if ( $dt ) {
+            $presale_end_formatted = wp_date( 'j \d\e F, Y', $dt->getTimestamp() );
+            $presale_end_timestamp = $dt->getTimestamp() * 1000; // ms, para el contador JS
+        }
+    }
+}
+
+// Enriquecer ticket_types con disponibilidad real y precio efectivo (preventa/normal)
 foreach ( $ticket_types as &$tt ) {
     $zone_key = $tt['zone'];
     $inv = $zone_inventory[ $zone_key ] ?? ( $zone_inventory[ strtoupper( $zone_key ) ] ?? null );
@@ -74,20 +91,27 @@ foreach ( $ticket_types as &$tt ) {
         $tt['sold']      = 0;
         $tt['reserved']  = 0;
     }
+
+    $presale_price = isset( $tt['presale_price'] ) ? (float) $tt['presale_price'] : 0;
+    $tt['is_presale_price'] = ( $is_presale && $presale_price > 0 );
+    $tt['effective_price']  = $tt['is_presale_price'] ? $presale_price : (float) $tt['price'];
 }
 unset( $tt );
 
-// Calcular disponibilidad total del evento
-$total_available = 0;
-foreach ( $ticket_types as $tt ) {
-    $total_available += max( 0, (int) $tt['available'] );
-}
-$is_sold_out = ( $total_available <= 0 );
+// Calcular disponibilidad total del evento (mismo helper que usa la tarjeta de evento)
+$availability_summary = function_exists( 'ss_get_event_availability_summary' )
+    ? ss_get_event_availability_summary( $event_id )
+    : array( 'total' => 0, 'available' => 0, 'percentage' => 0 );
+$total_available = $availability_summary['available'];
+$is_sold_out      = ( $availability_summary['total'] > 0 && $total_available <= 0 );
 
-// Colores de sillas desde settings
-$color_available = SS_Settings::get( 'seat_available_color', '#4CAF50' );
+// Colores de sillas desde settings.
+// "Disponible" no es configurable: cada evento define su color por zona (ver
+// $zones_legend abajo); este valor solo se usa como fallback en la leyenda
+// cuando el evento no tiene ninguna zona con color propio.
+$color_available = '#4CAF50';
 $color_reserved  = SS_Settings::get( 'seat_reserved_color', '#FF9800' );
-$color_sold      = SS_Settings::get( 'seat_sold_color', '#e0e0e0' );
+$color_sold      = SS_Settings::get( 'seat_sold_color', '#9e9e9e' );
 ?>
 
 <div class="tk-loader" id="ss-loader">
@@ -296,19 +320,48 @@ $color_sold      = SS_Settings::get( 'seat_sold_color', '#e0e0e0' );
                 </div>
                 <?php endif; ?>
 
+                <!-- Preventa -->
+                <?php if ( $is_presale && $presale_end_formatted ) : ?>
+                <div class="event-card__presale-banner">
+                    <strong>Preventa activa</strong>
+                    <span>Termina el <?php echo esc_html( $presale_end_formatted ); ?></span>
+                </div>
+                <?php endif; ?>
+
                 <!-- Entradas / zonas -->
                 <?php if ( ! empty( $ticket_types ) ) : ?>
                 <div class="ticket-section">
                     <p class="ticket-section__title">Entradas</p>
+
+                    <?php if ( $availability_summary['total'] > 0 && ! $is_sold_out ) :
+                        // 'percentage' del helper ya es % VENDIDO — la barra se llena a medida que se vende.
+                        $sold_pct = (int) $availability_summary['percentage'];
+                    ?>
+                    <div class="event-card__avail-wrap">
+                        <span class="event-card__avail-label"><strong><?php echo (int) $sold_pct; ?>%</strong> vendido</span>
+                        <div class="event-card__avail-bar" role="progressbar"
+                             aria-valuenow="<?php echo esc_attr( $sold_pct ); ?>"
+                             aria-valuemin="0" aria-valuemax="100"
+                             aria-label="Porcentaje vendido del evento">
+                            <div class="event-card__avail-bar-fill" style="width:<?php echo esc_attr( $sold_pct ); ?>%"></div>
+                        </div>
+                    </div>
+                    <?php endif; ?>
+
                     <?php foreach ( $ticket_types as $ticket ) :
                         $zone_sold_out = ( (int) $ticket['available'] <= 0 );
                     ?>
                     <div class="ticket-type ss-ticket-form__zone-item<?php echo $zone_sold_out ? ' ticket-type--sold-out' : ''; ?>"
                          data-zone="<?php echo esc_attr( $ticket['zone'] ); ?>"
-                         data-price="<?php echo esc_attr( $ticket['price'] ); ?>"
+                         data-price="<?php echo esc_attr( $ticket['effective_price'] ); ?>"
                          data-available="<?php echo esc_attr( $ticket['available'] ); ?>">
                         <div class="ticket-type__info">
-                            <span class="ticket-type__name"><?php echo esc_html( $ticket['zone'] ); ?></span>
+                            <span class="ticket-type__name">
+                                <?php echo esc_html( $ticket['zone'] ); ?>
+                                <?php if ( $ticket['is_presale_price'] ) : ?>
+                                <span class="ticket-type__presale-tag">Preventa</span>
+                                <?php endif; ?>
+                            </span>
                             <?php if ( $zone_sold_out ) : ?>
                             <span class="ticket-type__avail ticket-type__avail--sold-out" data-zone="<?php echo esc_attr( $ticket['zone'] ); ?>">Agotado</span>
                             <?php else : ?>
@@ -317,7 +370,10 @@ $color_sold      = SS_Settings::get( 'seat_sold_color', '#e0e0e0' );
                         </div>
                         <div class="ticket-type__right">
                             <span class="ticket-type__price">
-                                <?php echo $ticket['price'] > 0 ? wp_kses_post( wc_price( $ticket['price'] ) ) : esc_html( 'Gratis' ); ?>
+                                <?php if ( $ticket['is_presale_price'] && $ticket['price'] > $ticket['effective_price'] ) : ?>
+                                    <span class="ticket-type__price--regular"><?php echo wp_kses_post( wc_price( $ticket['price'] ) ); ?></span>
+                                <?php endif; ?>
+                                <?php echo $ticket['effective_price'] > 0 ? wp_kses_post( wc_price( $ticket['effective_price'] ) ) : esc_html( 'Gratis' ); ?>
                             </span>
                             <?php if ( $sale_mode !== 'seat' ) : ?>
                             <div class="qty-control ss-ticket-form__zone-qty<?php echo $zone_sold_out ? ' qty-control--disabled' : ''; ?>">
@@ -389,6 +445,38 @@ $color_sold      = SS_Settings::get( 'seat_sold_color', '#e0e0e0' );
                 <?php endif; ?>
 
             </div><!-- .event-card -->
+
+            <!-- Contador de preventa -->
+            <?php if ( $is_presale && $presale_end_timestamp > 0 ) : ?>
+            <div class="presale-countdown-card" data-presale-end="<?php echo esc_attr( $presale_end_timestamp ); ?>">
+                <p class="presale-countdown-card__title">La preventa termina en</p>
+                <div class="presale-countdown-card__grid" aria-live="polite">
+                    <div class="presale-countdown-card__box">
+                        <span class="presale-countdown-card__value" data-unit="days">—</span>
+                        <span class="presale-countdown-card__label">Días</span>
+                    </div>
+                    <span class="presale-countdown-card__sep">:</span>
+                    <div class="presale-countdown-card__box">
+                        <span class="presale-countdown-card__value" data-unit="hours">—</span>
+                        <span class="presale-countdown-card__label">Horas</span>
+                    </div>
+                    <span class="presale-countdown-card__sep">:</span>
+                    <div class="presale-countdown-card__box">
+                        <span class="presale-countdown-card__value" data-unit="minutes">—</span>
+                        <span class="presale-countdown-card__label">Min</span>
+                    </div>
+                    <span class="presale-countdown-card__sep">:</span>
+                    <div class="presale-countdown-card__box">
+                        <span class="presale-countdown-card__value" data-unit="seconds">—</span>
+                        <span class="presale-countdown-card__label">Seg</span>
+                    </div>
+                </div>
+                <?php if ( $presale_end_formatted ) : ?>
+                <p class="presale-countdown-card__end-date">Preventa hasta el <strong><?php echo esc_html( $presale_end_formatted ); ?></strong></p>
+                <?php endif; ?>
+            </div>
+            <?php endif; ?>
+
         </div><!-- .sidebar -->
 
     </div><!-- .main-layout -->
@@ -462,6 +550,39 @@ $color_sold      = SS_Settings::get( 'seat_sold_color', '#e0e0e0' );
     <?php endif; ?>
 
 </div><!-- .tk-root -->
+<?php if ( $is_presale && $presale_end_timestamp > 0 ) : ?>
+<script>
+(function(){
+    var box = document.querySelector('.presale-countdown-card');
+    if (!box) { return; }
+    var daysEl    = box.querySelector('[data-unit="days"]');
+    var hoursEl   = box.querySelector('[data-unit="hours"]');
+    var minutesEl = box.querySelector('[data-unit="minutes"]');
+    var secondsEl = box.querySelector('[data-unit="seconds"]');
+    var endTime = <?php echo (int) $presale_end_timestamp; ?>;
+    var timer = null;
+    function pad(n) { return n < 10 ? '0' + n : '' + n; }
+    function tick() {
+        var diff = endTime - Date.now();
+        if (diff <= 0) {
+            box.style.display = 'none';
+            if (timer) { clearInterval(timer); }
+            return;
+        }
+        var days = Math.floor(diff / 86400000);
+        var hours = Math.floor((diff % 86400000) / 3600000);
+        var minutes = Math.floor((diff % 3600000) / 60000);
+        var seconds = Math.floor((diff % 60000) / 1000);
+        daysEl.textContent = pad(days);
+        hoursEl.textContent = pad(hours);
+        minutesEl.textContent = pad(minutes);
+        secondsEl.textContent = pad(seconds);
+    }
+    tick();
+    timer = setInterval(tick, 1000);
+})();
+</script>
+<?php endif; ?>
 <script>
 (function(){
     var root = document.querySelector('.tk-root');

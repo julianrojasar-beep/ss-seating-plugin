@@ -3,7 +3,7 @@
  * Plugin Name: SS Seating
  * Plugin URI: https://tusitio.com
  * Description: Sistema de selección de sillas y venta de boletas con QR para eventos.
- * Version: 1.3.10
+ * Version: 1.3.11
  * Author: Julian Rojas
  * Author URI: https://tusitio.com
  * License: GPL v2 or later
@@ -66,8 +66,10 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/difusion/class-ss-difusion-
 // ── API REST: reportes para el dashboard externo ─────────────────────────────
 require_once plugin_dir_path( __FILE__ ) . 'includes/api/class-ss-rest-reports.php';
 
+// Descuentos de grupo y pareja son independientes del módulo de fidelización.
+require_once plugin_dir_path( __FILE__ ) . 'includes/loyalty/class-ss-group-discount.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/loyalty/class-ss-couple-discount.php';
 if ( SS_FIDELIZACION_ENABLED ) {
-    require_once plugin_dir_path( __FILE__ ) . 'includes/loyalty/class-ss-group-discount.php';
     require_once plugin_dir_path( __FILE__ ) . 'includes/loyalty/class-ss-loyalty.php';
 }
 
@@ -96,13 +98,12 @@ if ( SS_FIDELIZACION_ENABLED ) {
     }
 }
 
-// ── Pasar config de grupo al Box Office JS ────────────────────────────────────
-if ( SS_FIDELIZACION_ENABLED ) {
-    add_filter( 'ss_boxoffice_event_data', 'ss_boxoffice_add_discount_data', 10, 2 );
-    function ss_boxoffice_add_discount_data( array $data, int $event_id ): array {
-        $data['groupDiscount'] = SS_Group_Discount::get_for_event( $event_id );
-        return $data;
-    }
+// ── Pasar config de grupo y pareja al Box Office JS ───────────────────────────
+add_filter( 'ss_boxoffice_event_data', 'ss_boxoffice_add_discount_data', 10, 2 );
+function ss_boxoffice_add_discount_data( array $data, int $event_id ): array {
+    $data['groupDiscount']  = SS_Group_Discount::get_for_event( $event_id );
+    $data['coupleDiscount'] = SS_Couple_Discount::get_for_event( $event_id );
+    return $data;
 }
 
 // Legacy ss_seating_enqueue_assets removed — ss_event uses SS_Ticket_Form::enqueue_assets().
@@ -181,7 +182,7 @@ function ss_seating_metabox_render($post) {
 
     // --- Leer modo de venta y fee ---
     $sale_mode   = get_post_meta( $post->ID, '_ss_sale_mode', true );
-    if ( ! in_array( $sale_mode, array( 'seat', 'zone', 'hybrid' ), true ) ) {
+    if ( ! in_array( $sale_mode, array( 'seat', 'zone', 'hybrid', 'no_map' ), true ) ) {
         $sale_mode = 'seat';
     }
     $upgrade_fee = get_post_meta( $post->ID, '_ss_seat_upgrade_fee', true );
@@ -204,6 +205,9 @@ function ss_seating_metabox_render($post) {
             </option>
             <option value="hybrid" <?php selected( $sale_mode, 'hybrid' ); ?>>
                 <?php esc_html_e( 'Híbrido — mapa clickeable, +/- activo, asientos opcionales con fee', 'ss-seating' ); ?>
+            </option>
+            <option value="no_map" <?php selected( $sale_mode, 'no_map' ); ?>>
+                <?php esc_html_e( 'Sin mapa — venta solo por cantidad, sin selección de asientos ni mapa visible', 'ss-seating' ); ?>
             </option>
         </select>
     </p>
@@ -669,7 +673,7 @@ function ss_seating_save_metabox($post_id, $post) {
     update_post_meta($post_id, 'ss_row_types', wp_json_encode($sanitized_types));
 
     // --- Guardar modo de venta ---
-    $allowed_modes = array( 'seat', 'zone', 'hybrid' );
+    $allowed_modes = array( 'seat', 'zone', 'hybrid', 'no_map' );
     $sale_mode = isset( $_POST['ss_sale_mode'] ) ? sanitize_text_field( wp_unslash( $_POST['ss_sale_mode'] ) ) : 'seat';
     if ( ! in_array( $sale_mode, $allowed_modes, true ) ) {
         $sale_mode = 'seat';
@@ -897,42 +901,14 @@ add_action( 'wp_enqueue_scripts', function(): void {
 } );
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// PAGE LOADER — fondo oscuro + spinner antes de que el contenido sea visible
-// Se inyecta vía wp_head (background) y wp_body_open (overlay), que disparan
-// ANTES de que el shortcode o el template rendericen contenido.
+// PAGE LOADER — eliminado (ver historial de git).
+// Se agregó originalmente para tapar un flash de contenido sin estilo, pero solo
+// se insertaba en DOMContentLoaded — es decir, después de que el navegador ya
+// pintaba el HTML/CSS reales. En la práctica tapaba contenido que ya se veía bien
+// y sumaba ~700-900ms de espera artificial sin evitar ningún flash real.
+// Fondo oscuro inicial: lo cubre `background:#0a0a0f` en los estilos de
+// ss-events-archive.css / ss-event-page.css, que sí son render-blocking.
 // ═══════════════════════════════════════════════════════════════════════════════
-
-add_action( 'wp_head', function() {
-    $post = get_queried_object();
-    if ( ! ( $post instanceof WP_Post ) ) { return; }
-    $is_list  = has_shortcode( $post->post_content, 'ss_events' );
-    $is_event = is_singular( 'ss_event' );
-    if ( ! $is_list && ! $is_event ) { return; }
-    $primary = SS_Settings::get( 'color_primary', '#6d28d9' );
-    $min_ms  = $is_event ? 700 : 800;
-    $konva   = $is_event ? "document.addEventListener('ss:konva-ready',function(){d();},{once:true});" : '';
-    // Script síncrono: ejecuta antes de que el navegador pinte cualquier pixel.
-    // Pone el fondo oscuro en <html> INMEDIATAMENTE, sin depender de CSS.
-    // También crea el loader y lo inserta en cuanto <body> esté disponible.
-    echo '<script>
-(function(){
-  document.documentElement.style.background="#0a0a0f";
-  var START=Date.now(),MIN=' . (int) $min_ms . ',done=false;
-  function d(){if(done)return;done=true;var w=Math.max(0,MIN-(Date.now()-START));setTimeout(function(){var l=document.getElementById("ss-page-loader");if(l){l.style.opacity="0";setTimeout(function(){l.parentNode&&l.parentNode.removeChild(l);},420);}},w);}
-  function mk(){
-    if(document.getElementById("ss-page-loader"))return;
-    var l=document.createElement("div");
-    l.id="ss-page-loader";
-    l.style.cssText="position:fixed;inset:0;background:#0a0a0f;z-index:999999;display:flex;align-items:center;justify-content:center;transition:opacity .4s ease;";
-    l.innerHTML=\'<svg width="52" height="52" viewBox="0 0 44 44"><style>@keyframes ssS{to{transform:rotate(360deg)}}</style><circle cx="22" cy="22" r="18" fill="none" stroke="#1a1a2e" stroke-width="3"/><circle cx="22" cy="22" r="18" fill="none" stroke="' . esc_js( $primary ) . '" stroke-width="3" stroke-linecap="round" stroke-dasharray="80" stroke-dashoffset="60" style="transform-origin:22px 22px;animation:ssS .8s linear infinite"/></svg>\';
-    (document.body||document.documentElement).prepend(l);
-    ' . $konva . '
-    window.addEventListener("load",function(){setTimeout(d,200);});
-  }
-  if(document.body){mk();}else{document.addEventListener("DOMContentLoaded",mk);}
-})();
-</script>' . "\n";
-}, 1 );
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -994,7 +970,8 @@ function ss_events_shortcode( $atts = array() ) {
         filemtime( $plugin_path . 'assets/css/ss-events-archive.css' )
     );
 
-    $primary = SS_Settings::get( 'color_primary', '#6d28d9' );
+    $primary    = SS_Settings::get( 'color_primary', '#6d28d9' );
+    $text_color = SS_Settings::get( 'text_color', '#f0ede8' );
 
     ob_start();
     include $plugin_path . 'templates/events-archive.php';
@@ -1002,9 +979,24 @@ function ss_events_shortcode( $atts = array() ) {
 }
 
 /**
+ * Devuelve '#000' o '#fff' según cuál da mejor contraste sobre el color hex dado (fórmula YIQ).
+ * Usado para que el texto de botones/CTAs con el color primario configurable siga siendo legible
+ * sin importar si el admin elige un color claro (ej. amarillo) u oscuro.
+ */
+function ss_get_contrast_text_color( string $hex ): string {
+    $hex = ltrim( $hex, '#' );
+    if ( strlen( $hex ) !== 6 ) { return '#fff'; }
+    $r = hexdec( substr( $hex, 0, 2 ) );
+    $g = hexdec( substr( $hex, 2, 2 ) );
+    $b = hexdec( substr( $hex, 4, 2 ) );
+    $yiq = ( $r * 299 + $g * 587 + $b * 114 ) / 1000;
+    return $yiq >= 150 ? '#1a1a1a' : '#fff';
+}
+
+/**
  * Renderiza una card de evento individual.
  */
-function ss_render_event_card( WP_Post $event, bool $is_past = false ): string {
+function ss_render_event_card( WP_Post $event, bool $is_past = false, bool $is_first = false ): string {
     $event_id = $event->ID;
 
     // Imagen
@@ -1042,22 +1034,21 @@ function ss_render_event_card( WP_Post $event, bool $is_past = false ): string {
     $desc = wp_strip_all_tags( $desc );
     $desc = wp_trim_words( $desc, 25, '...' );
 
-    // Sold out?
-    $is_sold_out = false;
-    if ( ! $is_past && function_exists( 'ss_get_zone_inventory' ) ) {
-        $inv = ss_get_zone_inventory( $event_id );
-        if ( ! empty( $inv ) ) {
-            $total_available = 0;
-            foreach ( $inv as $z ) { $total_available += max( 0, (int) ( $z['available'] ?? 0 ) ); }
-            $is_sold_out = ( $total_available <= 0 );
-        }
+    // Disponibilidad / sold out
+    $availability = array( 'total' => 0, 'percentage' => 0 );
+    $is_sold_out  = false;
+    if ( ! $is_past && function_exists( 'ss_get_event_availability_summary' ) ) {
+        $availability = ss_get_event_availability_summary( $event_id );
+        $is_sold_out  = ( $availability['total'] > 0 && $availability['available'] <= 0 );
     }
 
     // Badges de descuento
     $badge_group   = ! $is_past && get_post_meta( $event_id, '_ss_group_discount_enabled', true ) === '1';
+    $badge_couple  = ! $is_past && get_post_meta( $event_id, '_ss_couple_discount_enabled', true ) === '1';
     $badge_loyalty = SS_FIDELIZACION_ENABLED && ! $is_past && get_post_meta( $event_id, '_ss_loyalty_enabled', true ) === '1';
     $gd_min_qty    = $badge_group ? (int) get_post_meta( $event_id, '_ss_group_discount_min_qty', true ) : 5;
     $gd_pct        = $badge_group ? (int) get_post_meta( $event_id, '_ss_group_discount_pct', true ) : 0;
+    $badge_presale = ! $is_past && class_exists( 'SS_Event_Service' ) && SS_Event_Service::instance()->is_presale_active( $event_id );
     if ( $gd_min_qty <= 0 ) { $gd_min_qty = 5; }
 
     $permalink = get_permalink( $event_id );
@@ -1073,7 +1064,7 @@ function ss_render_event_card( WP_Post $event, bool $is_past = false ): string {
         <a href="<?php echo esc_url( $permalink ); ?>" style="text-decoration:none;color:inherit;">
             <div class="ss-event-card__image-wrap">
                 <?php if ( $thumbnail ) : ?>
-                    <img class="ss-event-card__image" src="<?php echo esc_url( $thumbnail ); ?>" alt="<?php echo esc_attr( $event->post_title ); ?>" loading="lazy">
+                    <img class="ss-event-card__image" src="<?php echo esc_url( $thumbnail ); ?>" alt="<?php echo esc_attr( $event->post_title ); ?>"<?php echo $is_first ? ' fetchpriority="high"' : ' loading="lazy"'; ?>>
                 <?php else : ?>
                     <div class="ss-event-card__image-placeholder">&#127914;</div>
                 <?php endif; ?>
@@ -1082,7 +1073,7 @@ function ss_render_event_card( WP_Post $event, bool $is_past = false ): string {
                 <?php endif; ?>
             </div>
             <div class="ss-event-card__body">
-                <?php if ( $badge_group || $badge_loyalty ) : ?>
+                <?php if ( $badge_group || $badge_couple || $badge_loyalty || $badge_presale ) : ?>
                 <div class="ss-event-card__badges">
                     <?php if ( $badge_group ) : ?>
                         <span class="ss-event-card__badge ss-event-card__badge--group">
@@ -1090,12 +1081,26 @@ function ss_render_event_card( WP_Post $event, bool $is_past = false ): string {
                             <?php if ( $gd_pct > 0 ) : ?>&nbsp;<?php echo esc_html( $gd_pct ); ?>% OFF<?php endif; ?>
                         </span>
                     <?php endif; ?>
+                    <?php if ( $badge_couple ) : ?>
+                        <span class="ss-event-card__badge ss-event-card__badge--couple">Descuento por pareja</span>
+                    <?php endif; ?>
                     <?php if ( $badge_loyalty ) : ?>
                         <span class="ss-event-card__badge ss-event-card__badge--loyalty">Fidelización</span>
+                    <?php endif; ?>
+                    <?php if ( $badge_presale ) : ?>
+                        <span class="ss-event-card__badge ss-event-card__badge--presale">Preventa</span>
                     <?php endif; ?>
                 </div>
                 <?php endif; ?>
                 <h3 class="ss-event-card__title"><?php echo esc_html( $event->post_title ); ?></h3>
+                <?php if ( ! $is_past && $availability['total'] > 0 ) : ?>
+                    <div class="ss-event-card__avail-bar" role="progressbar"
+                         aria-valuenow="<?php echo esc_attr( $availability['percentage'] ); ?>"
+                         aria-valuemin="0" aria-valuemax="100"
+                         aria-label="Disponibilidad del evento">
+                        <div class="ss-event-card__avail-bar-fill" style="width:<?php echo esc_attr( $availability['percentage'] ); ?>%"></div>
+                    </div>
+                <?php endif; ?>
                 <div class="ss-event-card__meta">
                     <?php if ( $date_formatted ) : ?>
                         <span class="ss-event-card__meta-row"><?php echo $icon_cal; ?> <?php echo esc_html( $date_formatted ); ?></span>
@@ -1441,7 +1446,7 @@ function ss_allow_zone_quantity( bool $sold_individually, $product ): bool {
     $event_id = (int) get_post_meta( $product->get_id(), '_ss_event_id', true );
     if ( $event_id <= 0 ) { return $sold_individually; }
     $sale_mode = SS_Event_Service::instance()->get_sale_mode( $event_id );
-    if ( in_array( $sale_mode, array( 'general', 'hybrid' ), true ) ) {
+    if ( in_array( $sale_mode, array( 'general', 'hybrid', 'no_map' ), true ) ) {
         return false; // Permitir qty > 1
     }
     return $sold_individually;
@@ -1802,11 +1807,14 @@ function ss_seating_set_dynamic_price( WC_Cart $cart ): void {
         if ( ! is_array( $tt_raw ) || empty( $tt_raw ) ) {
             continue;
         }
-        $price = null;
+        $is_presale = SS_Event_Service::instance()->is_presale_active( $event_id );
+        $price      = null;
         foreach ( $tt_raw as $tt ) {
             $tt_zone = strtoupper( trim( (string) ( $tt['zone'] ?? '' ) ) );
             if ( $tt_zone === $zone || ( $zone === '' && $price === null ) ) {
-                $price = (float) ( $tt['price'] ?? 0 );
+                $normal_price  = (float) ( $tt['price'] ?? 0 );
+                $presale_price = isset( $tt['presale_price'] ) ? (float) $tt['presale_price'] : 0;
+                $price         = ( $is_presale && $presale_price > 0 ) ? $presale_price : $normal_price;
                 if ( $tt_zone === $zone ) {
                     break;
                 }
@@ -1882,44 +1890,16 @@ function ss_seating_hybrid_seat_fee( $cart ): void {
 }
 
 /**
- * Aplicar descuentos de grupo y fidelización como fee negativo en el carrito.
+ * Aplicar descuentos de grupo, pareja y fidelización como fee negativo en el carrito.
  * Se aplican en carrito, checkout y se transfieren al pedido automáticamente.
+ * No se acumulan entre sí: se aplica el que represente el mayor ahorro en dinero.
  */
 function ss_apply_event_discounts_to_cart( WC_Cart $cart ): void {
     if ( is_admin() && ! defined( 'DOING_AJAX' ) ) {
         return;
     }
-    if ( ! class_exists( 'SS_Group_Discount' ) || ! class_exists( 'SS_Loyalty' ) ) {
+    if ( ! class_exists( 'SS_Group_Discount' ) ) {
         return;
-    }
-
-    // Descuento grupal (no requiere email)
-    $group_pct = SS_Group_Discount::get_discount_for_cart();
-
-    // Descuento de fidelización (requiere email — disponible para logueados o en checkout)
-    $loyalty_pct = 0;
-    $email = '';
-    if ( function_exists( 'WC' ) && WC()->customer ) {
-        $email = WC()->customer->get_billing_email();
-    }
-    // Fallback: leer del POST si estamos en proceso de checkout
-    if ( empty( $email ) && ! empty( $_POST['billing_email'] ) ) {
-        $email = sanitize_email( wp_unslash( $_POST['billing_email'] ) );
-    }
-    if ( ! empty( $email ) ) {
-        $loyalty_pct = SS_Loyalty::get_applicable_for_cart( $email );
-    }
-
-    // Usar el mayor; en empate, fidelización gana
-    if ( $loyalty_pct <= 0 && $group_pct <= 0 ) {
-        return;
-    }
-    if ( $loyalty_pct >= $group_pct && $loyalty_pct > 0 ) {
-        $pct   = $loyalty_pct;
-        $label = sprintf( 'Descuento fidelización (%d%%)', $pct );
-    } else {
-        $pct   = $group_pct;
-        $label = sprintf( 'Descuento grupal (%d%%)', $pct );
     }
 
     $subtotal = $cart->get_subtotal();
@@ -1927,7 +1907,49 @@ function ss_apply_event_discounts_to_cart( WC_Cart $cart ): void {
         return;
     }
 
-    $discount = -round( $subtotal * $pct / 100, 2 );
+    // Descuento grupal (no requiere email)
+    $group_pct    = SS_Group_Discount::get_discount_for_cart();
+    $group_amount = $subtotal * $group_pct / 100;
+
+    // Descuento de pareja: % (sobre subtotal) o precio fijo (monto directo en moneda)
+    $couple_pct          = class_exists( 'SS_Couple_Discount' ) ? SS_Couple_Discount::get_discount_for_cart() : 0;
+    $couple_pct_amount   = $subtotal * $couple_pct / 100;
+    $couple_fixed_amount = class_exists( 'SS_Couple_Discount' ) ? SS_Couple_Discount::get_fixed_price_amount_for_cart( $cart ) : 0;
+    $couple_amount       = max( $couple_pct_amount, $couple_fixed_amount );
+
+    // Descuento de fidelización (requiere email — disponible para logueados o en checkout)
+    $loyalty_pct = 0;
+    if ( class_exists( 'SS_Loyalty' ) ) {
+        $email = '';
+        if ( function_exists( 'WC' ) && WC()->customer ) {
+            $email = WC()->customer->get_billing_email();
+        }
+        // Fallback: leer del POST si estamos en proceso de checkout
+        if ( empty( $email ) && ! empty( $_POST['billing_email'] ) ) {
+            $email = sanitize_email( wp_unslash( $_POST['billing_email'] ) );
+        }
+        if ( ! empty( $email ) ) {
+            $loyalty_pct = SS_Loyalty::get_applicable_for_cart( $email );
+        }
+    }
+    $loyalty_amount = $subtotal * $loyalty_pct / 100;
+
+    // Usar el mayor de los tres; en empate, prioridad: fidelización > grupal > pareja
+    $best_amount = max( $loyalty_amount, $group_amount, $couple_amount );
+    if ( $best_amount <= 0 ) {
+        return;
+    }
+    if ( $loyalty_amount === $best_amount ) {
+        $label = sprintf( 'Descuento fidelización (%d%%)', $loyalty_pct );
+    } elseif ( $group_amount === $best_amount ) {
+        $label = sprintf( 'Descuento grupal (%d%%)', $group_pct );
+    } elseif ( $couple_fixed_amount >= $couple_pct_amount ) {
+        $label = 'Descuento pareja (precio fijo)';
+    } else {
+        $label = sprintf( 'Descuento pareja (%d%%)', $couple_pct );
+    }
+
+    $discount = -round( $best_amount, 2 );
     $cart->add_fee( $label, $discount, false );
 }
 
@@ -5325,8 +5347,14 @@ function ss_get_zone_inventory( int $event_id ): array {
         return array();
     }
 
-    // Aplica en todos los modos con zonas.
     $sale_mode = SS_Event_Service::instance()->get_sale_mode( $event_id );
+
+    // Modo "sin mapa": el aforo viene de _ss_ticket_types, no del layout.
+    if ( $sale_mode === 'no_map' ) {
+        return ss_get_zone_inventory_no_map( $event_id );
+    }
+
+    // Aplica en todos los modos con zonas.
     if ( ! in_array( $sale_mode, array( 'seat', 'hybrid', 'general' ), true ) ) {
         return array();
     }
@@ -5429,6 +5457,86 @@ function ss_get_zone_inventory( int $event_id ): array {
     }
 
     return $result;
+}
+
+/**
+ * Inventario por zona para eventos en modo "sin mapa" (_ss_sale_mode = no_map).
+ *
+ * No depende de _ss_layout: el total por zona/tipo viene de la capacidad
+ * declarada en _ss_ticket_types, y el vendido reusa el mismo tracking de
+ * tickets sin silla que ya usan los modos hybrid/general.
+ *
+ * @param int $event_id ID del evento (ss_event).
+ * @return array [ 'ZONE_NAME' => [ 'zone'=>, 'total'=>, 'sold'=>, 'reserved'=>, 'available'=> ], ... ]
+ */
+function ss_get_zone_inventory_no_map( int $event_id ): array {
+    $ticket_types = SS_Event_Service::instance()->get_ticket_types( $event_id );
+    if ( empty( $ticket_types ) ) {
+        return array();
+    }
+
+    $zone_sold = ss_get_zone_nonseat_sold_meta( $event_id );
+    if ( empty( $zone_sold ) ) {
+        $zone_sold = ss_get_zone_sold_ticket_qtys_from_orders( $event_id );
+    }
+
+    $result = array();
+    foreach ( $ticket_types as $tt ) {
+        $zone = trim( (string) ( $tt['zone'] ?? '' ) );
+        if ( $zone === '' ) {
+            continue;
+        }
+        $total = max( 0, (int) ( $tt['capacity'] ?? 0 ) );
+        $sold  = $zone_sold[ strtoupper( $zone ) ] ?? 0;
+        $result[ $zone ] = array(
+            'zone'      => $zone,
+            'total'     => $total,
+            'sold'      => $sold,
+            'reserved'  => 0,
+            'available' => max( 0, $total - $sold ),
+        );
+    }
+
+    return $result;
+}
+
+/**
+ * Agregado global de disponibilidad de un evento (todas las zonas/tipos).
+ * Reusa ss_get_zone_inventory() como fuente única; si viene vacío (evento sin
+ * layout aún configurado), cae a la capacidad declarada en _ss_ticket_types.
+ *
+ * @param int $event_id ID del evento (ss_event).
+ * @return array { total, sold, reserved, available, percentage }
+ */
+function ss_get_event_availability_summary( int $event_id ): array {
+    $summary = array( 'total' => 0, 'sold' => 0, 'reserved' => 0, 'available' => 0, 'percentage' => 0 );
+    if ( ! $event_id ) {
+        return $summary;
+    }
+
+    $inv = function_exists( 'ss_get_zone_inventory' ) ? ss_get_zone_inventory( $event_id ) : array();
+
+    if ( ! empty( $inv ) ) {
+        foreach ( $inv as $z ) {
+            $summary['total']     += max( 0, (int) ( $z['total'] ?? 0 ) );
+            $summary['sold']      += max( 0, (int) ( $z['sold'] ?? 0 ) );
+            $summary['reserved']  += max( 0, (int) ( $z['reserved'] ?? 0 ) );
+            $summary['available'] += max( 0, (int) ( $z['available'] ?? 0 ) );
+        }
+    } else {
+        $ticket_types = SS_Event_Service::instance()->get_ticket_types( $event_id );
+        foreach ( $ticket_types as $tt ) {
+            $cap = max( 0, (int) ( $tt['capacity'] ?? 0 ) );
+            $summary['total']     += $cap;
+            $summary['available'] += $cap;
+        }
+    }
+
+    $summary['percentage'] = $summary['total'] > 0
+        ? (int) round( ( $summary['sold'] + $summary['reserved'] ) / $summary['total'] * 100 )
+        : 0;
+
+    return $summary;
 }
 
 // ── Non-seat sold tracking (hybrid mode) ──────────────────────────────────────
@@ -9702,6 +9810,9 @@ function ss_boxoffice_render( string $view, int $event_id, string $message = '',
             'groupDiscount' => class_exists( 'SS_Group_Discount' )
                 ? SS_Group_Discount::get_for_event( $event_id )
                 : array( 'enabled' => false, 'min_qty' => 5, 'pct' => 0 ),
+            'coupleDiscount' => class_exists( 'SS_Couple_Discount' )
+                ? SS_Couple_Discount::get_for_event( $event_id )
+                : array( 'enabled' => false, 'min_qty' => 2, 'pct' => 0 ),
             'colors'        => array(
                 'sold'     => get_option( 'ss_color_sold',     '#ef5350' ),
                 'reserved' => get_option( 'ss_color_reserved', '#fff3cd' ),

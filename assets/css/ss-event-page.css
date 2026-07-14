@@ -73,9 +73,9 @@ body.single-ss_event [class*="tutor-"] {
     --tk-bg-hover: rgba(255, 255, 255, 0.03);
     --tk-border: rgba(255, 255, 255, 0.08);
     --tk-border-light: rgba(255, 255, 255, 0.06);
-    --tk-text: #f0ede8;
-    --tk-text-muted: rgba(255, 255, 255, 0.45);
-    --tk-text-dim: rgba(255, 255, 255, 0.3);
+    --tk-text: var(--ss-text, #f0ede8);
+    --tk-text-muted: rgba(var(--ss-text-rgb, 240,237,232), 0.6);
+    --tk-text-dim: rgba(var(--ss-text-rgb, 240,237,232), 0.55);
     --tk-accent: var(--ss-primary-light, #a855f7);
     --tk-accent-dim: rgba(var(--ss-primary-rgb, 120,60,255), 0.25);
     --tk-accent-glow: rgba(var(--ss-primary-rgb, 120,60,255), 0.4);
@@ -409,7 +409,7 @@ body.single-ss_event [class*="tutor-"] {
     padding: 1.5rem;
     font-size: 14px;
     line-height: 1.8;
-    color: rgba(255, 255, 255, 0.55);
+    color: rgba(var(--ss-text-rgb, 240,237,232), 0.75);
 }
 
 .tk-root .description-block__body p {
@@ -478,6 +478,164 @@ body.single-ss_event [class*="tutor-"] {
     line-height: 1.4;
 }
 
+/* ── Banner de preventa ──────────────────────────────────────────────────── */
+.tk-root .event-card__presale-banner {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin: 0 1.25rem 1rem;
+    padding: 10px 14px;
+    border-radius: 10px;
+    border: 1px solid rgba(251, 146, 60, 0.45);
+    background: rgba(251, 146, 60, 0.14);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.tk-root .event-card__presale-banner strong {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #fdba74;
+}
+
+.tk-root .event-card__presale-banner span {
+    font-size: 12px;
+    color: var(--tk-text-dim);
+}
+
+/* ── Tarjeta de contador de preventa (debajo de la tarjeta de compra) ──────── */
+.tk-root .presale-countdown-card {
+    margin-top: 1rem;
+    padding: 1.25rem;
+    background: var(--tk-bg-card);
+    border: 0.5px solid rgba(251, 146, 60, 0.35);
+    border-radius: var(--tk-radius-xl);
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+}
+
+.tk-root .presale-countdown-card::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(circle at 50% 0%, rgba(251, 146, 60, 0.12), transparent 70%);
+    pointer-events: none;
+}
+
+.tk-root .presale-countdown-card__title {
+    position: relative;
+    margin: 0 0 14px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: #fdba74;
+}
+
+.tk-root .presale-countdown-card__grid {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+}
+
+.tk-root .presale-countdown-card__box {
+    flex: 1;
+    max-width: 90px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 10px 4px;
+    border-radius: 10px;
+    background: rgba(251, 146, 60, 0.08);
+    border: 1px solid rgba(251, 146, 60, 0.3);
+    position: relative;
+    overflow: hidden;
+}
+
+.tk-root .presale-countdown-card__box::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 44%;
+    height: 1px;
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.tk-root .presale-countdown-card__sep {
+    flex-shrink: 0;
+    align-self: center;
+    padding-bottom: 16px;
+    font-size: 20px;
+    font-weight: 700;
+    color: #fdba74;
+    opacity: 0.8;
+}
+
+.tk-root .presale-countdown-card__value {
+    font-family: 'Playfair Display', Georgia, serif;
+    font-size: 24px;
+    font-weight: 700;
+    line-height: 1.1;
+    color: #fdba74;
+    font-variant-numeric: tabular-nums;
+}
+
+.tk-root .presale-countdown-card__label {
+    margin-top: 4px;
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--tk-text-dim);
+}
+
+.tk-root .presale-countdown-card__end-date {
+    position: relative;
+    margin: 14px 0 0;
+    text-align: center;
+    font-size: 12px;
+    color: var(--tk-text-muted);
+}
+
+/* ── Barra de disponibilidad (dentro de "Entradas") ─────────────────────────── */
+.tk-root .event-card__avail-wrap {
+    margin-bottom: 14px;
+}
+
+.tk-root .event-card__avail-label {
+    display: block;
+    font-size: 11px;
+    color: var(--tk-text-dim);
+    margin-bottom: 6px;
+}
+
+.tk-root .event-card__avail-label strong {
+    color: rgba(255, 255, 255, 0.85);
+    font-weight: 600;
+}
+
+.tk-root .event-card__avail-bar {
+    height: 4px;
+    border-radius: 2px;
+    background: var(--tk-border, rgba(255, 255, 255, 0.08));
+    overflow: hidden;
+}
+
+.tk-root .event-card__avail-bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    background: linear-gradient(90deg, var(--ss-primary, #6d28d9), var(--ss-primary-light, #a855f7));
+    transition: width 0.3s ease;
+}
+
 /* ── Ticket types ────────────────────────────────────────────────────────── */
 .tk-root .ticket-section {
     padding: 1.25rem;
@@ -525,6 +683,31 @@ body.single-ss_event [class*="tutor-"] {
     font-size: 13px;
     font-weight: 500;
     color: rgba(255, 255, 255, 0.8);
+}
+
+.tk-root .ticket-type__presale-tag {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #fb923c;
+    background: rgba(251, 146, 60, 0.15);
+    border: 1px solid rgba(251, 146, 60, 0.4);
+}
+
+.tk-root .ticket-type__price--regular {
+    display: block;
+    font-size: 12px;
+    text-decoration: line-through;
+    text-decoration-color: #ef5350;
+    text-decoration-thickness: 1.5px;
+    color: #ef5350;
+    font-weight: 600;
+    opacity: 0.85;
 }
 
 .tk-root .ticket-type__avail {
@@ -670,7 +853,7 @@ body.single-ss_event [class*="tutor-"] {
     border-radius: var(--tk-radius-lg);
     border: none;
     background: linear-gradient(135deg, var(--ss-primary, #6d28d9), var(--ss-primary-light, #7c3aed));
-    color: #fff;
+    color: var(--ss-primary-contrast, #fff);
     font-size: 14px;
     font-weight: 500;
     letter-spacing: 0.04em;
@@ -872,6 +1055,27 @@ body.single-ss_event [class*="tutor-"] {
 
     .tk-root .event-card {
         border-radius: var(--tk-radius-lg);
+    }
+
+    .tk-root .presale-countdown-card {
+        padding: 1rem;
+        border-radius: var(--tk-radius-lg);
+    }
+
+    .tk-root .presale-countdown-card__grid {
+        gap: 6px;
+    }
+
+    .tk-root .presale-countdown-card__sep {
+        display: none;
+    }
+
+    .tk-root .presale-countdown-card__box {
+        padding: 8px 2px;
+    }
+
+    .tk-root .presale-countdown-card__value {
+        font-size: 19px;
     }
 
     .tk-root .event-card__header {

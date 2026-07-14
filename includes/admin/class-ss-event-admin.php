@@ -190,8 +190,9 @@ class SS_Event_Admin {
     // ── Tab: Fecha ───────────────────────────────────────────────────
 
     private static function render_tab_fecha( \WP_Post $post ): void {
-        $date = get_post_meta( $post->ID, '_ss_event_date', true );
-        $time = get_post_meta( $post->ID, '_ss_event_time', true );
+        $date            = get_post_meta( $post->ID, '_ss_event_date', true );
+        $time            = get_post_meta( $post->ID, '_ss_event_time', true );
+        $presale_end     = get_post_meta( $post->ID, '_ss_presale_end_date', true );
 
         // Backward compat: try old _ss_event_start_datetime
         if ( ! $date ) {
@@ -221,6 +222,16 @@ class SS_Event_Admin {
             </div>
             <p class="description">
                 Zona horaria de WordPress: <strong><?php echo esc_html( wp_timezone_string() ); ?></strong>
+            </p>
+            <div class="ss-admin-field-row">
+                <div class="ss-admin-field">
+                    <label class="ss-admin-field__label" for="ss-presale-end-date">Fin de preventa (opcional)</label>
+                    <input type="date" id="ss-presale-end-date" name="ss_presale_end_date"
+                           value="<?php echo esc_attr( $presale_end ); ?>">
+                </div>
+            </div>
+            <p class="description">
+                Antes de esta fecha se cobra el precio de preventa de cada tipo de boleta (pestaña Tickets). Dejar vacío para no usar preventa.
             </p>
         </div>
         <?php
@@ -322,6 +333,7 @@ class SS_Event_Admin {
                     <tr>
                         <th>Zona / Tipo <span class="ss-help" title="Debe coincidir exactamente con el nombre de zona definido en el mapa (ej: VIP, GENERAL). Las mayúsculas importan.">?</span></th>
                         <th>Precio <span class="ss-help" title="Precio en la moneda configurada en WooCommerce. Deja 0 si el evento es gratuito.">?</span></th>
+                        <th>Precio Preventa <span class="ss-help" title="Opcional. Se cobra este precio antes de la fecha de fin de preventa (pestaña Fecha). Deja 0 para no usar preventa en este tipo.">?</span></th>
                         <th>Capacidad <span class="ss-help" title="Se calcula automáticamente al guardar el mapa de asientos. Si no hay mapa, ingrésala manualmente.">?</span></th>
                         <th></th>
                     </tr>
@@ -338,6 +350,11 @@ class SS_Event_Admin {
                         <td>
                             <input type="number" name="ss_tt[<?php echo $i; ?>][price]"
                                    value="<?php echo esc_attr( $tt['price'] ?? 0 ); ?>"
+                                   min="0" step="100" class="widefat">
+                        </td>
+                        <td>
+                            <input type="number" name="ss_tt[<?php echo $i; ?>][presale_price]"
+                                   value="<?php echo esc_attr( $tt['presale_price'] ?? 0 ); ?>"
                                    min="0" step="100" class="widefat">
                         </td>
                         <td>
@@ -452,6 +469,11 @@ class SS_Event_Admin {
             $gd_enabled = get_post_meta( $post->ID, '_ss_group_discount_enabled', true );
             $gd_min_qty = (int) get_post_meta( $post->ID, '_ss_group_discount_min_qty', true );
             $gd_pct     = (int) get_post_meta( $post->ID, '_ss_group_discount_pct', true );
+            $cd_enabled     = get_post_meta( $post->ID, '_ss_couple_discount_enabled', true );
+            $cd_type        = get_post_meta( $post->ID, '_ss_couple_discount_type', true );
+            $cd_type        = $cd_type === 'fixed_price' ? 'fixed_price' : 'percentage';
+            $cd_pct         = (int) get_post_meta( $post->ID, '_ss_couple_discount_pct', true );
+            $cd_fixed_price = (float) get_post_meta( $post->ID, '_ss_couple_discount_fixed_price', true );
             $ly_enabled = SS_FIDELIZACION_ENABLED ? get_post_meta( $post->ID, '_ss_loyalty_enabled', true ) : '0';
             if ( $gd_min_qty <= 0 ) { $gd_min_qty = 5; }
             ?>
@@ -480,6 +502,63 @@ class SS_Event_Admin {
                     </td>
                 </tr>
             </table>
+
+            <hr>
+            <h3>Descuento por pareja</h3>
+            <table class="form-table">
+                <tr>
+                    <th>Activar descuento por pareja</th>
+                    <td>
+                        <label>
+                            <input type="checkbox" name="ss_couple_discount_enabled" value="1" <?php checked( $cd_enabled, '1' ); ?>>
+                            Activar para este evento
+                        </label>
+                        <p class="description">Aplica automáticamente a partir de 2 boletas.</p>
+                    </td>
+                </tr>
+                <tr>
+                    <th>Tipo de descuento</th>
+                    <td>
+                        <label style="margin-right:16px;">
+                            <input type="radio" id="ss-couple-type-pct" name="ss_couple_discount_type" value="percentage" <?php checked( $cd_type, 'percentage' ); ?>>
+                            Porcentaje
+                        </label>
+                        <label>
+                            <input type="radio" id="ss-couple-type-fixed" name="ss_couple_discount_type" value="fixed_price" <?php checked( $cd_type, 'fixed_price' ); ?>>
+                            Precio fijo por pareja
+                        </label>
+                        <span class="ss-help" title="El precio fijo solo se aplica automáticamente cuando se compran EXACTAMENTE 2 boletas de la MISMA zona/tipo. Si se compran 3 o más boletas, o boletas de zonas distintas, el precio fijo no aplica (podría aplicar en su lugar el descuento grupal si está configurado).">?</span>
+                    </td>
+                </tr>
+                <tr id="ss-couple-pct-row" style="<?php echo $cd_type !== 'percentage' ? 'display:none;' : ''; ?>">
+                    <th>Porcentaje de descuento (%)</th>
+                    <td>
+                        <input type="number" name="ss_couple_discount_pct" value="<?php echo esc_attr( $cd_pct ); ?>" min="1" max="100" style="width:80px;">
+                    </td>
+                </tr>
+                <tr id="ss-couple-fixed-row" style="<?php echo $cd_type !== 'fixed_price' ? 'display:none;' : ''; ?>">
+                    <th>Precio fijo por pareja</th>
+                    <td>
+                        <input type="number" name="ss_couple_discount_fixed_price" value="<?php echo esc_attr( $cd_fixed_price ); ?>" min="0" step="100" style="width:120px;">
+                        <p class="description">Precio total por las 2 boletas juntas (reemplaza la suma de sus precios individuales).</p>
+                    </td>
+                </tr>
+            </table>
+            <script>
+            (function(){
+                var pctRadio = document.getElementById('ss-couple-type-pct');
+                var fixedRadio = document.getElementById('ss-couple-type-fixed');
+                var pctRow = document.getElementById('ss-couple-pct-row');
+                var fixedRow = document.getElementById('ss-couple-fixed-row');
+                function toggle() {
+                    if (!pctRow || !fixedRow) { return; }
+                    pctRow.style.display = fixedRadio && fixedRadio.checked ? 'none' : '';
+                    fixedRow.style.display = fixedRadio && fixedRadio.checked ? '' : 'none';
+                }
+                if (pctRadio) { pctRadio.addEventListener('change', toggle); }
+                if (fixedRadio) { fixedRadio.addEventListener('change', toggle); }
+            })();
+            </script>
 
             <?php if ( SS_FIDELIZACION_ENABLED ) : ?>
             <hr>
@@ -553,6 +632,10 @@ class SS_Event_Admin {
         self::update_or_delete( $post_id, '_ss_event_date', $date );
         self::update_or_delete( $post_id, '_ss_event_time', $time );
 
+        // ── Fin de preventa ──
+        $presale_end = isset( $_POST['ss_presale_end_date'] ) ? sanitize_text_field( $_POST['ss_presale_end_date'] ) : '';
+        self::update_or_delete( $post_id, '_ss_presale_end_date', $presale_end );
+
         // Also write combined datetime for legacy compat
         if ( $date ) {
             $combined = $time ? "$date $time" : "$date 00:00";
@@ -589,6 +672,16 @@ class SS_Event_Admin {
         update_post_meta( $post_id, '_ss_group_discount_min_qty', $gd_min_qty );
         update_post_meta( $post_id, '_ss_group_discount_pct', $gd_pct );
 
+        // ── Descuento por pareja ──
+        $cd_enabled     = ! empty( $_POST['ss_couple_discount_enabled'] ) ? '1' : '0';
+        $cd_type        = isset( $_POST['ss_couple_discount_type'] ) && $_POST['ss_couple_discount_type'] === 'fixed_price' ? 'fixed_price' : 'percentage';
+        $cd_pct         = isset( $_POST['ss_couple_discount_pct'] ) ? min( 100, max( 0, absint( $_POST['ss_couple_discount_pct'] ) ) ) : 0;
+        $cd_fixed_price = isset( $_POST['ss_couple_discount_fixed_price'] ) ? max( 0, (float) $_POST['ss_couple_discount_fixed_price'] ) : 0;
+        update_post_meta( $post_id, '_ss_couple_discount_enabled', $cd_enabled );
+        update_post_meta( $post_id, '_ss_couple_discount_type', $cd_type );
+        update_post_meta( $post_id, '_ss_couple_discount_pct', $cd_pct );
+        update_post_meta( $post_id, '_ss_couple_discount_fixed_price', $cd_fixed_price );
+
         // ── Fidelización ──
         if ( SS_FIDELIZACION_ENABLED ) {
             $ly_enabled = ! empty( $_POST['ss_loyalty_enabled'] ) ? '1' : '0';
@@ -604,9 +697,10 @@ class SS_Event_Admin {
                 continue;
             }
             $ticket_types[] = array(
-                'zone'     => $zone,
-                'price'    => isset( $tt['price'] ) ? max( 0, (float) $tt['price'] ) : 0,
-                'capacity' => isset( $tt['capacity'] ) ? max( 0, (int) $tt['capacity'] ) : 0,
+                'zone'          => $zone,
+                'price'         => isset( $tt['price'] ) ? max( 0, (float) $tt['price'] ) : 0,
+                'presale_price' => isset( $tt['presale_price'] ) ? max( 0, (float) $tt['presale_price'] ) : 0,
+                'capacity'      => isset( $tt['capacity'] ) ? max( 0, (int) $tt['capacity'] ) : 0,
             );
         }
         update_post_meta( $post_id, '_ss_ticket_types', $ticket_types );

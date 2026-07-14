@@ -147,6 +147,7 @@
                 '<tr class="ss-ticket-row">' +
                     '<td><input type="text" name="ss_tt[' + i + '][zone]" value="" placeholder="Ej: VIP" class="widefat"></td>' +
                     '<td><input type="number" name="ss_tt[' + i + '][price]" value="0" min="0" step="100" class="widefat"></td>' +
+                    '<td><input type="number" name="ss_tt[' + i + '][presale_price]" value="0" min="0" step="100" class="widefat"></td>' +
                     '<td><input type="number" name="ss_tt[' + i + '][capacity]" value="0" min="0" class="widefat"></td>' +
                     '<td><button type="button" class="button ss-ticket-remove" title="Eliminar">&times;</button></td>' +
                 '</tr>';

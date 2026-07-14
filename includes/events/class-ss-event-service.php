@@ -64,12 +64,23 @@ class SS_Event_Service {
     }
 
     /**
-     * Modo de venta: seat, general o hybrid.
+     * Modo de venta: seat, general, hybrid o no_map.
      */
     public function get_sale_mode( int $event_id ): string {
         $mode = get_post_meta( $event_id, '_ss_sale_mode', true );
         // Admin saves 'zone'; normalize to 'general' for consistency.
         if ( $mode === 'zone' ) { $mode = 'general'; }
-        return in_array( $mode, array( 'seat', 'general', 'hybrid' ), true ) ? $mode : 'seat';
+        return in_array( $mode, array( 'seat', 'general', 'hybrid', 'no_map' ), true ) ? $mode : 'seat';
+    }
+
+    /**
+     * True si el evento tiene fecha de fin de preventa configurada y todavía no pasó.
+     */
+    public function is_presale_active( int $event_id ): bool {
+        $cutoff = get_post_meta( $event_id, '_ss_presale_end_date', true );
+        if ( ! $cutoff ) {
+            return false;
+        }
+        return current_time( 'Y-m-d' ) < $cutoff;
     }
 }

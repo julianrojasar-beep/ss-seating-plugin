@@ -4,7 +4,6 @@
  *
  * Uses the theme's header/footer so the navigation and cart are always visible.
  * CSS overrides in ss-event-page.css handle any theme container conflicts.
- * Page loader is injected via wp_body_open hook in ss-seating-plugin.php.
  */
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }

@@ -17,9 +17,9 @@
   // ─── Selection colors (from SS_Settings, with fallback defaults) ─
   var _fc = (window.ssSeatingAjax && window.ssSeatingAjax.colors) || {};
   var COLOR_SELECTED    = '#0073aa';
-  var COLOR_SOLD_FILL   = _fc.sold     || '#e0e0e0';
-  var COLOR_SOLD_STROKE = _fc.sold     || '#ccc';
-  var COLOR_SOLD_TEXT   = '#aaa';
+  var COLOR_SOLD_FILL   = _fc.sold     || '#9e9e9e';
+  var COLOR_SOLD_STROKE = _fc.sold     || '#7a7a7a';
+  var COLOR_SOLD_TEXT   = '#4a4a4a';
   var COLOR_RESV_FILL   = _fc.reserved || '#fff3cd';
   var COLOR_RESV_STROKE = _fc.reserved || '#ffc107';
   var COLOR_RESV_TEXT   = '#856404';
@@ -129,7 +129,7 @@
     seatLayer.add(seatsGroup);
     seatLayer.batchDraw();
 
-    _bindMapInteraction(container, stage, seatLayer, seatNodes, config, zoneColorMap, soldSet, reservedSet, saleMode);
+    _bindMapInteraction(container, stage, seatLayer, seatNodes, seats, config, zoneColorMap, soldSet, reservedSet, saleMode);
   }
 
   function init() {
@@ -152,79 +152,10 @@
     _buildMap(container);
   }
 
-  function _bindMapInteraction(container, stage, seatLayer, seatNodes, config, zoneColorMap, soldSet, reservedSet, saleMode) {
-    var state  = window.ssSeatingState || { sold: [], reserved: [] };
-
-    // Sale mode: seat (default), zone, hybrid
-    var saleMode = (window.ssSeatingAjax && window.ssSeatingAjax.saleMode)
-                || (window.ssTicketForm && window.ssTicketForm.saleMode)
-                || 'seat';
-    if (saleMode === 'general') saleMode = 'zone'; // PHP usa 'general', renderer usa 'zone'
-
-    // Build seat geometry via SeatEngine
-    var seats = SeatEngine.buildSeatsFromConfig(config);
-    if (!seats.length) return;
-
-    // ── Create Stage ───────────────────────────────────────────────
-    var stage = new Konva.Stage({
-      container: 'ss-konva-container',
-      width:  container.clientWidth  || 800,
-      height: container.clientHeight || 400,
-    });
-
-    var zoneLayer = new Konva.Layer();
-    var seatLayer = new Konva.Layer({ listening: true });
-    stage.add(zoneLayer);
-    stage.add(seatLayer);
-
-    // ── Draw escenario ─────────────────────────────────────────────
-    if (config.layout && config.layout.stage) {
-      drawEscenario(zoneLayer, config.layout.stage);
-    }
-
-    // ── Draw zone rects (subtle, non-interactive) ──────────────────
-    var zoneColorMap = buildZoneColorMap(config.zones || []);
-    var zoneRects = config.zoneRects || [];
-    for (var z = 0; z < zoneRects.length; z++) {
-      drawZoneRect(zoneLayer, zoneRects[z], zoneColorMap);
-    }
-
-    // ── Draw floor-label banners ────────────────────────────────────
-    var rows = config.rows || [];
-    for (var fl = 0; fl < rows.length; fl++) {
-      if (rows[fl].type !== 'floor-label') continue;
-      var flRow = rows[fl];
-      var flGroup = new Konva.Group({ x: config.startX || 100, y: flRow.y - 14 });
-      flGroup.add(new Konva.Rect({
-        x: 0, y: 0, width: 500, height: 22,
-        fill: '#1e293b', opacity: 0.75, cornerRadius: 4
-      }));
-      flGroup.add(new Konva.Text({
-        x: 8, y: 4,
-        text: flRow.text || 'PISO',
-        fontSize: 13, fontStyle: 'bold',
-        fill: '#fbbf24', fontFamily: 'sans-serif'
-      }));
-      zoneLayer.add(flGroup);
-    }
-
-    zoneLayer.batchDraw();
-
-    // ── Draw seats (Circle + Text label) — now interactive ─────────
-    var soldSet     = arrayToSet(state.sold);
-    var reservedSet = arrayToSet(state.reserved);
-
-    // seatNodes: { "A1": { circle, label, zone, baseColor } }
-    var seatNodes = {};
-    var seatsGroup = new Konva.Group();
-
-    for (var i = 0; i < seats.length; i++) {
-      var seatData = seats[i];
-      var node = drawSeat(seatsGroup, seatData, zoneColorMap, soldSet, reservedSet, saleMode);
-      seatNodes[seatData.id] = node;
-    }
-    seatLayer.add(seatsGroup);
-    seatLayer.batchDraw();
+  function _bindMapInteraction(container, stage, seatLayer, seatNodes, seats, config, zoneColorMap, soldSet, reservedSet, saleMode) {
+    // NOTA: stage/seatLayer/seatNodes/seats/zoneColorMap/soldSet/reservedSet ya fueron
+    // construidos y dibujados por _buildMap(); esta función solo ata la interacción
+    // (antes duplicaba la construcción completa del stage — ver historial de git).
 
     // ── DOM references for summary + hidden input ──────────────────
     var root             = container.closest('.ss-seating');

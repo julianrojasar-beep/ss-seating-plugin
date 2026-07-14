@@ -33,10 +33,9 @@ class SS_Settings {
     public static function defaults(): array {
         return array(
             'color_primary'           => '#6d28d9',
-            'color_secondary'         => '#ffffff',
-            'seat_available_color'    => '#4CAF50',
+            'text_color'              => '#f0ede8',
             'seat_reserved_color'     => '#FF9800',
-            'seat_sold_color'         => '#e0e0e0',
+            'seat_sold_color'         => '#9e9e9e',
             'show_legend'             => '1',
             'show_inventory'          => '1',
             'show_selection_summary'  => '1',
@@ -180,7 +179,7 @@ class SS_Settings {
         $defaults  = self::defaults();
         $sanitized = array();
 
-        $estilo_keys  = array( 'color_primary', 'color_secondary', 'seat_available_color', 'seat_reserved_color', 'seat_sold_color' );
+        $estilo_keys  = array( 'color_primary', 'text_color', 'seat_reserved_color', 'seat_sold_color' );
         $general_keys = array_keys( array_diff_key( $defaults, array_flip( $estilo_keys ) ) );
         $keys = ( $action === 'save_estilo' ) ? $estilo_keys : $general_keys;
 
@@ -343,21 +342,87 @@ class SS_Settings {
             <input type="hidden" name="_ss_cfg_nonce" value="<?php echo esc_attr( $nonce ); ?>">
             <input type="hidden" name="ss_action" value="save_estilo">
 
+            <p class="description" style="margin-bottom:16px">Así se ve el mapa de asientos y los botones en tu sitio público, cuando un cliente compra boletas online.</p>
+
+            <div id="ss-color-preview" style="background:#0a0a0f;border-radius:12px;padding:20px 24px;margin:0 0 24px;max-width:460px;">
+                <p style="color:rgba(255,255,255,.45);font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin:0 0 14px;">Vista previa en vivo</p>
+                <h3 id="ss-preview-title" style="margin:0 0 6px;font-size:16px;">Jueves de Magia</h3>
+                <p id="ss-preview-body" style="margin:0 0 16px;font-size:13px;line-height:1.6;">Un plan diferente para romper la rutina y dejarte sorprender. Teatro Esquina Latina · 7:30 PM.</p>
+                <button type="button" id="ss-preview-btn" style="width:100%;padding:11px 16px;border-radius:10px;border:none;font-size:13px;font-weight:600;letter-spacing:.03em;cursor:default;margin-bottom:20px;">Ver evento</button>
+                <div style="display:flex;gap:24px;">
+                    <div style="text-align:center;">
+                        <div id="ss-preview-seat-avail" style="width:30px;height:30px;border-radius:50%;background:#4a90d9;margin:0 auto 6px;"></div>
+                        <span style="color:rgba(255,255,255,.55);font-size:11px;">Disponible*</span>
+                    </div>
+                    <div style="text-align:center;">
+                        <div id="ss-preview-seat-reserved" style="width:30px;height:30px;border-radius:50%;margin:0 auto 6px;"></div>
+                        <span style="color:rgba(255,255,255,.55);font-size:11px;">Reservada</span>
+                    </div>
+                    <div style="text-align:center;">
+                        <div id="ss-preview-seat-sold" style="width:30px;height:30px;border-radius:50%;margin:0 auto 6px;"></div>
+                        <span style="color:rgba(255,255,255,.55);font-size:11px;">Vendida</span>
+                    </div>
+                </div>
+                <p style="color:rgba(255,255,255,.3);font-size:10px;margin:14px 0 0;">*Ilustrativo — el color real de "Disponible" lo define cada evento por zona.</p>
+            </div>
+
             <h2 style="margin-top:0">Colores de la interfaz</h2>
             <table class="form-table">
-                <?php $this->row_color( $on, 'color_primary',   'Color primario',   $s ); ?>
-                <?php $this->row_color( $on, 'color_secondary', 'Color secundario', $s ); ?>
+                <?php $this->row_color( $on, 'color_primary', 'Color primario', $s ); ?>
+                <?php $this->row_color( $on, 'text_color',    'Color de texto', $s ); ?>
             </table>
+            <p class="description" style="margin:-8px 0 16px">"Color primario" se usa en botones ("Ver evento", "Comprar entrada"), acentos y bordes — el texto sobre esos botones se ajusta solo (blanco u oscuro) para que siempre se lea bien. "Color de texto" gobierna títulos, descripciones e información del evento, tanto en las tarjetas del listado como dentro de la página del evento.</p>
 
             <h2>Colores de sillas (frontend)</h2>
             <table class="form-table">
-                <?php $this->row_color( $on, 'seat_available_color', 'Disponible', $s ); ?>
                 <?php $this->row_color( $on, 'seat_reserved_color',  'Reservada',  $s ); ?>
                 <?php $this->row_color( $on, 'seat_sold_color',      'Vendida',    $s ); ?>
             </table>
+            <p class="description" style="margin-top:-8px">El color de las sillas "Disponible" lo define cada evento por zona (pestaña "Mapa" o "Tickets" del evento), no aquí.</p>
 
             <?php submit_button( 'Guardar estilo' ); ?>
         </form>
+
+        <script>
+        (function () {
+            function fieldFor(key) {
+                return document.querySelector('input[name="<?php echo esc_js( $on ); ?>[' + key + ']"]');
+            }
+            function contrastColor(hex) {
+                hex = (hex || '').replace('#', '');
+                if (hex.length !== 6) { return '#fff'; }
+                var r = parseInt(hex.substr(0, 2), 16), g = parseInt(hex.substr(2, 2), 16), b = parseInt(hex.substr(4, 2), 16);
+                var yiq = (r * 299 + g * 587 + b * 114) / 1000;
+                return yiq >= 150 ? '#1a1a1a' : '#fff';
+            }
+            var primaryInput  = fieldFor('color_primary');
+            var textInput     = fieldFor('text_color');
+            var reservedInput = fieldFor('seat_reserved_color');
+            var soldInput     = fieldFor('seat_sold_color');
+            var btn      = document.getElementById('ss-preview-btn');
+            var title    = document.getElementById('ss-preview-title');
+            var body     = document.getElementById('ss-preview-body');
+            var rSwatch  = document.getElementById('ss-preview-seat-reserved');
+            var sSwatch  = document.getElementById('ss-preview-seat-sold');
+
+            function update() {
+                if (primaryInput && btn) {
+                    btn.style.background = primaryInput.value;
+                    btn.style.color = contrastColor(primaryInput.value);
+                }
+                if (textInput) {
+                    if (title) { title.style.color = textInput.value; }
+                    if (body)  { body.style.color = textInput.value; body.style.opacity = '0.75'; }
+                }
+                if (reservedInput && rSwatch) { rSwatch.style.background = reservedInput.value; }
+                if (soldInput && sSwatch)     { sSwatch.style.background = soldInput.value; }
+            }
+            [primaryInput, textInput, reservedInput, soldInput].forEach(function (el) {
+                if (el) { el.addEventListener('input', update); }
+            });
+            update();
+        })();
+        </script>
         <?php
     }
 
@@ -376,7 +441,7 @@ class SS_Settings {
             <input type="hidden" name="ss_action" value="save_colores_bo">
 
             <h2 style="margin-top:0">Colores del Box Office</h2>
-            <p class="description" style="margin-bottom:16px">Estos colores se aplican en el mapa del Box Office y en la leyenda.</p>
+            <p class="description" style="margin-bottom:16px">Así se ve el mapa de asientos en el panel interno que usa el cajero en taquilla — tu cliente <strong>nunca</strong> ve estos colores.</p>
             <table class="form-table">
             <?php foreach ( $colors as $key => list( $label, $default ) ) :
                 $val = get_option( $key, $default );

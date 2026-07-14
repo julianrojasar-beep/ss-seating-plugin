@@ -4,7 +4,7 @@ Tags: eventos, asientos, boletas, qr, woocommerce
 Requires at least: 5.8
 Tested up to: 6.7
 Requires PHP: 7.4
-Stable tag: 1.3.7
+Stable tag: 1.3.10
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -23,7 +23,10 @@ Sistema completo de selección de asientos, venta de boletas con QR y gestión d
 * Check-in con escáner QR desde dispositivo móvil
 * Cierre contable consolidado (Box Office + Web + Taquilla)
 * Centro de Difusión con links inteligentes, UTMs por canal y plantillas de WhatsApp
-* Descuentos grupales automáticos por cantidad de boletas
+* Descuentos grupales y por pareja (porcentaje o precio fijo) automáticos
+* Precios de preventa/venta con fecha de corte y contador regresivo en la página del evento
+* Modo de venta "sin mapa" para eventos de venta general por cantidad, sin selección de asiento
+* Barra de disponibilidad en tiempo real en el listado y la página de cada evento
 * Soporte para múltiples zonas con precios diferenciados
 * Actualizaciones automáticas vía GitHub Releases
 
@@ -36,6 +39,22 @@ Sistema completo de selección de asientos, venta de boletas con QR y gestión d
 5. Diseña el mapa de asientos desde la pestaña **Mapa** del evento
 
 == Changelog ==
+
+= 1.3.11 =
+* Nuevo: Modo de venta "Sin mapa" — venta por cantidad sin selección de asiento ni mapa visible, aforo controlado por la capacidad definida en cada tipo de boleta
+* Nuevo: Precio de preventa por tipo de boleta con fecha de corte por evento — se cobra automáticamente antes/después del corte, con banner y contador regresivo (días/horas/minutos/segundos) en la página del evento
+* Nuevo: Descuento por pareja — configurable como porcentaje o como precio fijo por las 2 boletas (independiente del descuento grupal, no se acumulan)
+* Nuevo: Barra de disponibilidad en el listado de eventos y en la página de compra
+* Nuevo: Control de "Color de texto" en SS Seating → Configuración → Estilo, con vista previa en vivo (botón + textos + colores de sillas) que se actualiza al instante mientras eliges los colores
+* Fix: Los descuentos de grupo y pareja ya no dependen del módulo de Fidelización — funcionan aunque esté desactivado
+* Fix: Al aplicar descuentos en el carrito, ahora se compara el ahorro real en dinero (no solo el %) entre fidelización, grupo y pareja, para elegir siempre el que más conviene al comprador
+* Fix: El mapa de asientos (Konva) construía el mapa completo dos veces en cada carga de página — se eliminó la duplicación, reduciendo el trabajo del navegador a la mitad
+* Fix: Se eliminó el loader de pantalla completa de la página de evento y del listado — solo aparecía después de que el contenido ya se había pintado, sumando espera sin evitar ningún parpadeo real
+* Fix: El texto de los botones ("Ver evento", "Comprar entrada") ahora ajusta su color automáticamente (blanco/oscuro) según el color primario elegido, para que siempre se lea bien
+* Fix: Mejor contraste general de los textos informativos en la página del evento (encabezados de sección, disponibilidad, notas) y en la descripción del evento
+* Fix: El ícono de las tarjetas de evento sin imagen ya no queda casi invisible (opacidad muy baja)
+* Fix: La primera imagen del listado de eventos ya no se carga en diferido (lazy), priorizando su descarga por ser la más visible
+* Fix: Se quitaron del panel de administración dos controles de color que no tenían ningún efecto real ("Color secundario" y el color "Disponible" de sillas, que en realidad lo define cada evento por zona)
 
 = 1.3.7 =
 * Fix: Cierre Contable ahora detecta correctamente las ventas web (la query pasó a usar `woocommerce_order_itemmeta` en vez de order meta, recuperando también pedidos históricos)

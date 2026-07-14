@@ -87,14 +87,21 @@ class SS_Ticket_Form {
             filemtime( $plugin_path . 'assets/css/ss-event-page.css' )
         );
 
-        // Inyectar color primario como CSS variable
+        // Inyectar color primario + color de texto como CSS variables
         $primary = SS_Settings::get( 'color_primary', '#6d28d9' );
         // Generar variante más clara (+15% lightness aprox)
         $r = hexdec( substr( $primary, 1, 2 ) );
         $g = hexdec( substr( $primary, 3, 2 ) );
         $b = hexdec( substr( $primary, 5, 2 ) );
-        $lighter = sprintf( '#%02x%02x%02x', min( 255, $r + 25 ), min( 255, $g + 25 ), min( 255, $b + 25 ) );
-        wp_add_inline_style( 'ss-event-page', ":root { --ss-primary: {$primary}; --ss-primary-light: {$lighter}; --ss-primary-rgb: {$r},{$g},{$b}; }" );
+        $lighter  = sprintf( '#%02x%02x%02x', min( 255, $r + 25 ), min( 255, $g + 25 ), min( 255, $b + 25 ) );
+        $contrast = ss_get_contrast_text_color( $primary );
+
+        $text_color = SS_Settings::get( 'text_color', '#f0ede8' );
+        $tr = hexdec( substr( $text_color, 1, 2 ) );
+        $tg = hexdec( substr( $text_color, 3, 2 ) );
+        $tb = hexdec( substr( $text_color, 5, 2 ) );
+
+        wp_add_inline_style( 'ss-event-page', ":root { --ss-primary: {$primary}; --ss-primary-light: {$lighter}; --ss-primary-rgb: {$r},{$g},{$b}; --ss-primary-contrast: {$contrast}; --ss-text: {$text_color}; --ss-text-rgb: {$tr},{$tg},{$tb}; }" );
 
         // Konva renderer stack (si hay layout con filas)
         $layout_raw = SS_Event_Service::instance()->get_layout_raw( $event_id );
@@ -169,7 +176,7 @@ class SS_Ticket_Form {
                 'eventId'  => $event_id,
                 'saleMode' => $sale_mode,
                 'colors'   => array(
-                    'sold'     => SS_Settings::get( 'seat_sold_color',     '#e0e0e0' ),
+                    'sold'     => SS_Settings::get( 'seat_sold_color',     '#9e9e9e' ),
                     'reserved' => SS_Settings::get( 'seat_reserved_color', '#FF9800' ),
                 ),
             ) );
