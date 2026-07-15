@@ -289,12 +289,14 @@ body.ss-events-page #content,
 body.ss-events-page .site-main,
 body.ss-events-page article,
 body.ss-events-page .page-content,
-body.ss-events-page .ast-container,
-body.ss-events-page .ast-page-builder-template,
-body.ss-events-page .fl-content,
-body.ss-events-page .elementor-section-wrap,
-body.ss-events-page .wp-block-group__inner-container,
-body.ss-events-page .container,
-body.ss-events-page .wrapper {
+/* Clases genéricas (container/wrapper/ast-container/etc.) también existen dentro
+   del header del theme — se restringen a #content para no romper el header. */
+body.ss-events-page #content .ast-container,
+body.ss-events-page #content .ast-page-builder-template,
+body.ss-events-page #content .fl-content,
+body.ss-events-page #content .elementor-section-wrap,
+body.ss-events-page #content .wp-block-group__inner-container,
+body.ss-events-page #content .container,
+body.ss-events-page #content .wrapper {
     background: #0a0a0f !important;
 }

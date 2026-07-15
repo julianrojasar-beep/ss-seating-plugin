@@ -43,18 +43,20 @@ body.single-ss_event main,
 body.single-ss_event #primary,
 body.single-ss_event #content,
 body.single-ss_event .content-area,
-body.single-ss_event .container,
-body.single-ss_event .wrapper,
-body.single-ss_event .page-content,
-body.single-ss_event .ast-container,
-body.single-ss_event .fl-content,
-body.single-ss_event .elementor-section-wrap,
-body.single-ss_event .wp-block-group__inner-container,
-body.single-ss_event .tutor-container,
-body.single-ss_event .tutor-wrap,
-body.single-ss_event .tutor-page-wrap,
 body.single-ss_event .starter-starter-content,
-body.single-ss_event [class*="tutor-"] {
+/* Clases genéricas (container/wrapper/ast-container/etc.) también existen dentro
+   del header del theme — se restringen a #content para no romper el header. */
+body.single-ss_event #content .container,
+body.single-ss_event #content .wrapper,
+body.single-ss_event #content .page-content,
+body.single-ss_event #content .ast-container,
+body.single-ss_event #content .fl-content,
+body.single-ss_event #content .elementor-section-wrap,
+body.single-ss_event #content .wp-block-group__inner-container,
+body.single-ss_event #content .tutor-container,
+body.single-ss_event #content .tutor-wrap,
+body.single-ss_event #content .tutor-page-wrap,
+body.single-ss_event #content [class*="tutor-"] {
     max-width: none !important;
     width: 100% !important;
     padding-left: 0 !important;
