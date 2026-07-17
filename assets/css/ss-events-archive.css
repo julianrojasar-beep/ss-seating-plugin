@@ -262,6 +262,50 @@
     padding: 4rem 0;
 }
 
+/* ── Compact variant (homepage strip) ────────────────────────────────────── */
+
+.ss-events-compact {
+    padding: 1.5rem 1rem;
+}
+
+.ss-events-compact .ss-events-section {
+    margin-bottom: 0;
+}
+
+.ss-events-grid--compact {
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 1.1rem;
+}
+
+.ss-events-grid--compact .ss-event-card__image,
+.ss-events-grid--compact .ss-event-card__image-placeholder {
+    aspect-ratio: 16 / 10;
+}
+
+.ss-events-grid--compact .ss-event-card__body {
+    padding: 1rem 1.1rem 1.1rem;
+}
+
+.ss-events-grid--compact .ss-event-card__title {
+    font-size: 1rem;
+    margin-bottom: 0.4rem;
+}
+
+.ss-events-grid--compact .ss-event-card__badges,
+.ss-events-grid--compact .ss-event-card__desc,
+.ss-events-grid--compact .ss-event-card__avail-bar {
+    display: none;
+}
+
+.ss-events-grid--compact .ss-event-card__meta {
+    margin-bottom: 0.7rem;
+}
+
+.ss-events-grid--compact .ss-event-card__cta {
+    padding: 9px 14px;
+    font-size: 0.8rem;
+}
+
 /* ── Responsive ───────────────────────────────────────────────────────────── */
 
 @media (max-width: 700px) {

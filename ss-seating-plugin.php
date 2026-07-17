@@ -3,7 +3,7 @@
  * Plugin Name: SS Seating
  * Plugin URI: https://tusitio.com
  * Description: Sistema de selección de sillas y venta de boletas con QR para eventos.
- * Version: 1.3.15
+ * Version: 1.3.16
  * Author: Julian Rojas
  * Author URI: https://tusitio.com
  * License: GPL v2 or later
@@ -232,10 +232,16 @@ function ss_seating_metabox_render($post) {
     (function(){
         var sel = document.getElementById('ss_sale_mode');
         var wrap = document.getElementById('ss_upgrade_fee_wrap');
-        if (sel && wrap) {
-            sel.addEventListener('change', function(){
-                wrap.style.display = this.value === 'hybrid' ? '' : 'none';
+        var mapBlocks = document.querySelectorAll('.ss-mapa-builder-block');
+        function toggle() {
+            if (wrap) { wrap.style.display = sel.value === 'hybrid' ? '' : 'none'; }
+            mapBlocks.forEach(function(el){
+                el.style.display = sel.value === 'no_map' ? 'none' : (el.getAttribute('data-show-display') || '');
             });
+        }
+        if (sel) {
+            sel.addEventListener('change', toggle);
+            toggle();
         }
     })();
     </script>
@@ -245,7 +251,7 @@ function ss_seating_metabox_render($post) {
     $layout_json = get_post_meta($post->ID, '_ss_layout', true);
     ?>
 
-    <div id="ss-admin-builder-wrapper" class="ss-layout-editor">
+    <div id="ss-admin-builder-wrapper" class="ss-layout-editor ss-mapa-builder-block"<?php echo $sale_mode === 'no_map' ? ' style="display:none;"' : ''; ?>>
 
         <!-- Canvas -->
         <div class="ss-layout-canvas">
@@ -933,9 +939,53 @@ function ss_events_shortcode( $atts = array() ) {
     $atts = shortcode_atts( array(
         'limit'    => -1,
         'past'     => 'yes',
+        'style'    => 'full', // 'full' | 'compact'
+        'title'    => '',
     ), $atts, 'ss_events' );
 
+    if ( $atts['style'] === 'compact' ) {
+        return ss_render_events_compact( (int) $atts['limit'], (string) $atts['title'] );
+    }
+
     return ss_render_events_archive( (int) $atts['limit'], $atts['past'] === 'yes' );
+}
+
+/**
+ * Renderiza una franja compacta de próximos eventos (sin pasados, sin descripción
+ * ni badges) pensada para insertarse en una página de inicio u otra sección liviana.
+ * Usa la misma tarjeta que [ss_events] (ss_render_event_card) con un modificador CSS.
+ */
+function ss_render_events_compact( int $limit = 6, string $title = '' ): string {
+    $upcoming = get_posts( array(
+        'post_type'      => 'ss_event',
+        'post_status'    => 'publish',
+        'posts_per_page' => $limit > 0 ? $limit : 6,
+        'meta_key'       => '_ss_event_date',
+        'orderby'        => 'meta_value',
+        'order'          => 'ASC',
+        'meta_query'     => array( array(
+            'key'     => '_ss_event_date',
+            'value'   => current_time( 'Y-m-d' ),
+            'compare' => '>=',
+            'type'    => 'DATE',
+        ) ),
+    ) );
+
+    $plugin_url  = plugin_dir_url( __FILE__ );
+    $plugin_path = plugin_dir_path( __FILE__ );
+    wp_enqueue_style(
+        'ss-events-archive',
+        $plugin_url . 'assets/css/ss-events-archive.css',
+        array(),
+        filemtime( $plugin_path . 'assets/css/ss-events-archive.css' )
+    );
+
+    $primary    = SS_Settings::get( 'color_primary', '#6d28d9' );
+    $text_color = SS_Settings::get( 'text_color', '#f0ede8' );
+
+    ob_start();
+    include $plugin_path . 'templates/events-compact.php';
+    return ob_get_clean();
 }
 
 /**
@@ -1073,8 +1123,8 @@ function ss_render_event_card( WP_Post $event, bool $is_past = false, bool $is_f
     $cta_text  = $is_past ? 'Ver evento' : ( $is_sold_out ? 'Agotado' : 'Ver evento' );
 
     // SVG icons
-    $icon_cal  = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>';
-    $icon_pin  = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg>';
+    $icon_cal  = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>';
+    $icon_pin  = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg>';
 
     ob_start();
     ?>
@@ -5524,6 +5574,7 @@ function ss_get_zone_inventory_no_map( int $event_id ): array {
     if ( empty( $zone_sold ) ) {
         $zone_sold = ss_get_zone_sold_ticket_qtys_from_orders( $event_id );
     }
+    $zone_reserved = ss_zone_tickets_get_reserved_qtys_by_zone( $event_id );
 
     $result = array();
     foreach ( $ticket_types as $tt ) {
@@ -5531,14 +5582,15 @@ function ss_get_zone_inventory_no_map( int $event_id ): array {
         if ( $zone === '' ) {
             continue;
         }
-        $total = max( 0, (int) ( $tt['capacity'] ?? 0 ) );
-        $sold  = $zone_sold[ strtoupper( $zone ) ] ?? 0;
+        $total    = max( 0, (int) ( $tt['capacity'] ?? 0 ) );
+        $sold     = $zone_sold[ strtoupper( $zone ) ] ?? 0;
+        $reserved = $zone_reserved[ strtoupper( $zone ) ] ?? 0;
         $result[ $zone ] = array(
             'zone'      => $zone,
             'total'     => $total,
             'sold'      => $sold,
-            'reserved'  => 0,
-            'available' => max( 0, $total - $sold ),
+            'reserved'  => $reserved,
+            'available' => max( 0, $total - $sold - $reserved ),
         );
     }
 
@@ -5868,7 +5920,7 @@ function ss_get_event_zone_stats( int $event_id ): array {
 function ss_get_event_combined_stats( int $event_id ): array {
     $sale_mode = SS_Event_Service::instance()->get_sale_mode( $event_id );
 
-    if ( $sale_mode === 'general' ) {
+    if ( $sale_mode === 'general' || $sale_mode === 'no_map' ) {
         return ss_get_event_zone_stats( $event_id );
     }
 
@@ -7931,6 +7983,53 @@ function ss_seats_get_manual_reserved( int $event_id ): array {
     return array_keys( $manual );
 }
 
+// ── Reservas manuales por cantidad (modo "sin mapa" — sin silla asociada) ────
+// Estructura paralela a _ss_manual_reserved_seats, pero como no hay seat_id
+// que sirva de clave única, cada registro se guarda con un id generado.
+
+function ss_zone_tickets_manual_reserve( int $event_id, string $zone, int $qty, string $user, string $nombre = '', string $telefono = '' ): string {
+    $reservas = get_post_meta( $event_id, '_ss_manual_reserved_tickets', true );
+    if ( ! is_array( $reservas ) ) { $reservas = array(); }
+    $id = uniqid( 'zt_', true );
+    $reservas[ $id ] = array(
+        'zone'      => $zone,
+        'qty'       => max( 0, $qty ),
+        'user'      => $user,
+        'nombre'    => $nombre,
+        'telefono'  => $telefono,
+        'timestamp' => time(),
+    );
+    update_post_meta( $event_id, '_ss_manual_reserved_tickets', $reservas );
+    return $id;
+}
+
+function ss_zone_tickets_manual_release( int $event_id, string $id ): bool {
+    $reservas = get_post_meta( $event_id, '_ss_manual_reserved_tickets', true );
+    if ( ! is_array( $reservas ) || ! isset( $reservas[ $id ] ) ) { return false; }
+    unset( $reservas[ $id ] );
+    update_post_meta( $event_id, '_ss_manual_reserved_tickets', $reservas );
+    return true;
+}
+
+function ss_zone_tickets_get_manual_reserved( int $event_id ): array {
+    $reservas = get_post_meta( $event_id, '_ss_manual_reserved_tickets', true );
+    return is_array( $reservas ) ? $reservas : array();
+}
+
+/**
+ * Suma de cantidades reservadas manualmente por zona (mayúsculas), para restar
+ * del disponible en ss_get_zone_inventory_no_map().
+ */
+function ss_zone_tickets_get_reserved_qtys_by_zone( int $event_id ): array {
+    $result = array();
+    foreach ( ss_zone_tickets_get_manual_reserved( $event_id ) as $r ) {
+        $zone = strtoupper( trim( (string) ( $r['zone'] ?? '' ) ) );
+        if ( $zone === '' ) { continue; }
+        $result[ $zone ] = ( $result[ $zone ] ?? 0 ) + (int) ( $r['qty'] ?? 0 );
+    }
+    return $result;
+}
+
 // ── Autenticación Box Office (usuarios en wp_options) ────────────────────────
 
 function ss_boxoffice_get_users(): array {
@@ -8974,10 +9073,42 @@ function ss_boxoffice_ajax_reserve(): void {
     $raw      = isset( $_POST['seats'] ) ? sanitize_text_field( wp_unslash( $_POST['seats'] ) ) : '';
     $seats    = array_values( array_filter( array_map( 'trim', explode( ',', $raw ) ) ) );
 
+    $ticket_qtys_raw = isset( $_POST['ticket_qtys'] ) ? sanitize_text_field( wp_unslash( $_POST['ticket_qtys'] ) ) : '';
+    $ticket_qtys      = $ticket_qtys_raw ? json_decode( $ticket_qtys_raw, true ) : array();
+    if ( ! is_array( $ticket_qtys ) ) { $ticket_qtys = array(); }
+
     check_ajax_referer( 'ss_boxoffice_nonce', 'nonce' );
 
     $user = ss_boxoffice_check_auth();
     if ( ! $user ) { wp_send_json_error( 'No autorizado', 401 ); }
+
+    $nombre_reserva   = sanitize_text_field( wp_unslash( $_POST['reserve_nombre'] ?? '' ) );
+    $telefono_reserva = sanitize_text_field( wp_unslash( $_POST['reserve_telefono'] ?? '' ) );
+
+    // Reserva por cantidad (modo "sin mapa" — sin silla asociada)
+    if ( empty( $seats ) && ! empty( $ticket_qtys ) ) {
+        if ( ! $event_id ) { wp_send_json_error( 'Datos incompletos' ); }
+
+        $inventory = ss_get_zone_inventory( $event_id );
+        $summary   = array();
+        foreach ( $ticket_qtys as $zone => $qty ) {
+            $qty = (int) $qty;
+            if ( $qty <= 0 ) { continue; }
+            $inv = $inventory[ $zone ] ?? $inventory[ strtoupper( trim( (string) $zone ) ) ] ?? null;
+            if ( $inv && $qty > (int) $inv['available'] ) {
+                wp_send_json_error( 'No hay suficiente disponibilidad en ' . $zone . ' (quedan ' . $inv['available'] . ')' );
+            }
+            ss_zone_tickets_manual_reserve( $event_id, (string) $zone, $qty, $user, $nombre_reserva, $telefono_reserva );
+            $summary[] = $zone . ' x' . $qty;
+        }
+        if ( empty( $summary ) ) { wp_send_json_error( 'Seleccione cantidad de tickets' ); }
+
+        $accion_log = 'reservar ' . implode( ', ', $summary ) . ( $nombre_reserva ? ' a nombre de ' . $nombre_reserva : '' );
+        ss_boxoffice_log( $event_id, $user, $accion_log, array() );
+        ss_litespeed_purge_event( $event_id );
+
+        wp_send_json_success( array( 'message' => 'Reservados: ' . implode( ', ', $summary ) ) );
+    }
 
     if ( ! $event_id || empty( $seats ) ) { wp_send_json_error( 'Datos incompletos' ); }
 
@@ -8987,9 +9118,6 @@ function ss_boxoffice_ajax_reserve(): void {
     if ( ! empty( $conflict ) ) {
         wp_send_json_error( 'Sillas no disponibles: ' . implode( ', ', $conflict ) );
     }
-
-    $nombre_reserva   = sanitize_text_field( wp_unslash( $_POST['reserve_nombre'] ?? '' ) );
-    $telefono_reserva = sanitize_text_field( wp_unslash( $_POST['reserve_telefono'] ?? '' ) );
 
     ss_seats_manual_reserve( $event_id, $seats, $user, $nombre_reserva, $telefono_reserva );
     $accion_log = $nombre_reserva ? 'reservar a nombre de ' . $nombre_reserva : 'reservar';
@@ -9022,6 +9150,9 @@ function ss_boxoffice_ajax_sell(): void {
     $ticket_qtys_raw = isset( $_POST['ticket_qtys'] ) ? sanitize_text_field( wp_unslash( $_POST['ticket_qtys'] ) ) : '';
     $ticket_qtys     = $ticket_qtys_raw ? json_decode( $ticket_qtys_raw, true ) : array();
     if ( ! is_array( $ticket_qtys ) ) { $ticket_qtys = array(); }
+
+    // reservation_id: si la venta viene de "Vender" en una reserva por cantidad (modo sin mapa)
+    $reservation_id = sanitize_text_field( wp_unslash( $_POST['reservation_id'] ?? '' ) );
 
     check_ajax_referer( 'ss_boxoffice_nonce', 'nonce' );
 
@@ -9178,6 +9309,10 @@ function ss_boxoffice_ajax_sell(): void {
     if ( $has_seats ) {
         ss_seats_manual_release( $event_id, $seats );
     }
+    // Limpiar la reserva por cantidad de la que vino esta venta (modo sin mapa)
+    if ( $reservation_id ) {
+        ss_zone_tickets_manual_release( $event_id, $reservation_id );
+    }
 
     // Generar QR del pedido
     $token = ss_checkin_token( $order_id );
@@ -9266,6 +9401,33 @@ function ss_boxoffice_ajax_release(): void {
     wp_send_json_success( array( 'message' => 'Liberadas: ' . implode( ', ', $seats ) ) );
 }
 
+add_action( 'wp_ajax_ss_boxoffice_release_tickets',       'ss_boxoffice_ajax_release_tickets' );
+add_action( 'wp_ajax_nopriv_ss_boxoffice_release_tickets', 'ss_boxoffice_ajax_release_tickets' );
+
+function ss_boxoffice_ajax_release_tickets(): void {
+    $event_id       = (int) ( $_POST['event_id'] ?? 0 );
+    $reservation_id = sanitize_text_field( wp_unslash( $_POST['reservation_id'] ?? '' ) );
+
+    check_ajax_referer( 'ss_boxoffice_nonce', 'nonce' );
+
+    $user = ss_boxoffice_check_auth();
+    if ( ! $user ) { wp_send_json_error( 'No autorizado', 401 ); }
+
+    if ( ! $event_id || ! $reservation_id ) { wp_send_json_error( 'Datos incompletos' ); }
+
+    $reservas = ss_zone_tickets_get_manual_reserved( $event_id );
+    if ( ! isset( $reservas[ $reservation_id ] ) ) {
+        wp_send_json_error( 'Reserva no encontrada' );
+    }
+    $r = $reservas[ $reservation_id ];
+
+    ss_zone_tickets_manual_release( $event_id, $reservation_id );
+    ss_boxoffice_log( $event_id, $user, 'liberar ' . $r['zone'] . ' x' . $r['qty'], array() );
+    ss_litespeed_purge_event( $event_id );
+
+    wp_send_json_success( array( 'message' => 'Liberado: ' . $r['zone'] . ' x' . $r['qty'] ) );
+}
+
 add_action( 'wp_ajax_ss_boxoffice_get_log',       'ss_boxoffice_ajax_get_log' );
 add_action( 'wp_ajax_nopriv_ss_boxoffice_get_log', 'ss_boxoffice_ajax_get_log' );
 
@@ -9309,6 +9471,7 @@ function ss_boxoffice_ajax_get_reservations(): void {
         $key      = $nombre . '|' . $telefono;
         if ( ! isset( $groups[ $key ] ) ) {
             $groups[ $key ] = array(
+                'type'      => 'seats',
                 'nombre'    => $nombre,
                 'telefono'  => $telefono,
                 'seats'     => array(),
@@ -9320,6 +9483,20 @@ function ss_boxoffice_ajax_get_reservations(): void {
     }
 
     $reservations = array_values( $groups );
+
+    // Reservas por cantidad (modo "sin mapa" — sin silla asociada)
+    foreach ( ss_zone_tickets_get_manual_reserved( $event_id ) as $id => $r ) {
+        $reservations[] = array(
+            'type'      => 'tickets',
+            'id'        => $id,
+            'zone'      => $r['zone']      ?? '',
+            'qty'       => (int) ( $r['qty'] ?? 0 ),
+            'nombre'    => $r['nombre']    ?? '',
+            'telefono'  => $r['telefono']  ?? '',
+            'timestamp' => $r['timestamp'] ?? 0,
+        );
+    }
+
     usort( $reservations, function ( $a, $b ) { return $b['timestamp'] <=> $a['timestamp']; } );
 
     wp_send_json_success( array( 'reservations' => $reservations ) );
@@ -9987,8 +10164,8 @@ a{color:#64b5f6;text-decoration:none}
 /* ── Sidebar log ───────────────────────────────── */
 .bo-sidebar{width:300px;background:#1a1a2e;border-left:1px solid #2a2a4a;display:flex;flex-direction:column}
 .bo-sidebar__title{padding:14px 16px;font-size:14px;font-weight:700;color:#fff;border-bottom:1px solid #2a2a4a}
-.bo-sidebar__tabs{display:flex;border-bottom:1px solid #2a2a4a}
-.bo-sidebar__tab{flex:1;padding:10px 8px;font-size:13px;font-weight:600;color:#888;background:none;border:none;cursor:pointer;border-bottom:2px solid transparent;transition:all .2s}
+.bo-sidebar__tabs{display:flex;border-bottom:1px solid #2a2a4a;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;scrollbar-width:thin}
+.bo-sidebar__tab{flex:0 0 auto;white-space:nowrap;padding:10px 12px;font-size:13px;font-weight:600;color:#888;background:none;border:none;cursor:pointer;border-bottom:2px solid transparent;transition:all .2s}
 .bo-sidebar__tab.active{color:#fff;border-bottom-color:#7c3aed}
 .bo-sidebar__tab:active{transform:scale(.96)}
 .bo-sidebar__tab:hover:not(.active){color:#bbb}
@@ -10119,6 +10296,54 @@ a{color:#64b5f6;text-decoration:none}
 .bo-toast__msg--error{background:#c62828;color:#fff}
 @keyframes boFadeIn{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
 
+/* ── Bento layout (Box Office, modo "sin mapa") ─── */
+.bo-map--bento .bo-legend,
+.bo-map--bento #bo-floor-tabs,
+.bo-map--bento .bo-map__canvas{display:none !important}
+.bo-map--bento{
+  flex:0 0 360px;
+  justify-content:center;
+}
+.bo-map--bento .bo-zone-tickets{margin:12px}
+
+.bo-sidebar--bento{
+  width:auto;
+  flex:1;
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  grid-auto-rows:min-content;
+  gap:12px;
+  padding:12px;
+  overflow-y:auto;
+  align-content:start;
+}
+.bo-sidebar--bento .bo-sidebar__tabs{display:none}
+.bo-sidebar--bento .bo-sidebar__list,
+.bo-sidebar--bento .bo-transfer-panel{
+  display:block !important;
+  flex:none;
+  max-height:360px;
+  overflow-y:auto;
+  border:1px solid #2a2a4a;
+  border-radius:10px;
+  background:rgba(255,255,255,.02);
+}
+.bo-sidebar--bento #bo-orders-list,
+.bo-sidebar--bento #bo-transfer-panel{grid-column:1 / -1}
+.bo-sidebar--bento .bo-sidebar__list::before{
+  display:block;font-size:11px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.05em;color:#888;padding:10px 12px 4px;
+}
+.bo-sidebar--bento #bo-stats-panel::before{content:"Capacidad"}
+.bo-sidebar--bento #bo-log-list::before{content:"Actividad"}
+.bo-sidebar--bento #bo-reservations-list::before{content:"Reservas"}
+.bo-sidebar--bento #bo-orders-list::before{content:"Pedidos"}
+.bo-bento-collapse summary{list-style:none;cursor:pointer;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#888;padding:10px 12px 4px}
+.bo-bento-collapse summary::-webkit-details-marker{display:none}
+.bo-bento-collapse summary::before{content:"▸ Trasladar boleta"}
+.bo-bento-collapse[open] summary::before{content:"▾ Trasladar boleta"}
+.bo-bento-collapse .bo-transfer{padding:0 12px 12px}
+
 /* ── Responsive ─────────────────────────────────── */
 @media(max-width:900px){
   .bo-sidebar{width:240px}
@@ -10139,6 +10364,10 @@ a{color:#64b5f6;text-decoration:none}
   .bo-toolbar__action{padding:10px 16px;min-height:44px}
   .bo-sidebar__tab{padding:12px 6px;min-height:44px}
   .bo-seat-tooltip{max-width:80vw;white-space:normal}
+  .bo-map--bento{flex:0 0 auto;height:auto;overflow:visible;justify-content:flex-start}
+  .bo-sidebar--bento{grid-template-columns:1fr;max-height:none;flex:1}
+  .bo-sidebar--bento .bo-sidebar__list,
+  .bo-sidebar--bento .bo-transfer-panel{grid-column:1 / -1;max-height:none}
 }
 </style>
 </head>
@@ -10299,8 +10528,9 @@ a{color:#64b5f6;text-decoration:none}
 </div>
 
 <!-- Body -->
+<?php $is_bento = ( $sale_mode === 'no_map' ); ?>
 <div class="bo-body">
-    <div class="bo-map">
+    <div class="bo-map<?php echo $is_bento ? ' bo-map--bento' : ''; ?>">
         <div class="bo-legend" id="bo-legend">
             <span class="bo-legend__item"><span class="bo-legend__dot" style="background:#888"></span> Disponible</span>
             <span class="bo-legend__item"><span class="bo-legend__dot" style="background:<?php echo esc_attr( get_option('ss_color_reserved','#fff3cd') ); ?>"></span> En carrito</span>
@@ -10340,7 +10570,7 @@ a{color:#64b5f6;text-decoration:none}
         </div>
     </div>
 
-    <div class="bo-sidebar">
+    <div class="bo-sidebar<?php echo $is_bento ? ' bo-sidebar--bento' : ''; ?>">
         <div class="bo-sidebar__tabs">
             <button type="button" class="bo-sidebar__tab active" data-panel="bo-log-list">Actividad</button>
             <button type="button" class="bo-sidebar__tab" data-panel="bo-orders-list">Pedidos</button>
@@ -10368,6 +10598,7 @@ a{color:#64b5f6;text-decoration:none}
             <div style="padding:20px;text-align:center;color:#666;font-size:13px">Cargando reservas...</div>
         </div>
         <div class="bo-sidebar__list bo-transfer-panel" id="bo-transfer-panel" style="display:none">
+            <?php if ( $is_bento ) : ?><details class="bo-bento-collapse"><summary></summary><?php endif; ?>
             <div class="bo-transfer">
                 <div class="bo-transfer__search">
                     <input type="number" id="bo-transfer-order-input" placeholder="# Pedido" min="1">
@@ -10386,6 +10617,7 @@ a{color:#64b5f6;text-decoration:none}
                     <button type="button" id="bo-transfer-confirm-btn" class="bo-transfer__confirm-btn">Confirmar traslado</button>
                 </div>
             </div>
+            <?php if ( $is_bento ) : ?></details><?php endif; ?>
         </div>
     </div>
 </div>

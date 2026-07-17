@@ -384,7 +384,8 @@ class SS_Event_Admin {
         <div class="ss-admin-tabs__panel" data-tab="mapa">
             <?php
             // ── Importar mapa de otro evento ─────────────────────────────
-            $event_id = $post->ID;
+            $event_id  = $post->ID;
+            $sale_mode = get_post_meta( $event_id, '_ss_sale_mode', true );
             $events_with_layout = get_posts( array(
                 'post_type'      => 'ss_event',
                 'post_status'    => array( 'publish', 'draft', 'private' ),
@@ -402,7 +403,7 @@ class SS_Event_Admin {
             if ( true ) :
                 $copy_nonce = wp_create_nonce( 'ss_copy_layout' );
             ?>
-            <div class="ss-copy-layout-box" style="background:#f6f7f7;border:1px solid #dcdcde;border-radius:4px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <div class="ss-copy-layout-box ss-mapa-builder-block" data-show-display="flex" style="background:#f6f7f7;border:1px solid #dcdcde;border-radius:4px;padding:12px 16px;margin-bottom:16px;display:<?php echo $sale_mode === 'no_map' ? 'none' : 'flex'; ?>;align-items:center;gap:10px;flex-wrap:wrap;">
                 <strong style="margin-right:4px;">Importar mapa de: <span class="ss-help" title="Copia el diseño de filas y zonas de otro evento existente. Útil cuando la sala es siempre la misma. El mapa importado reemplaza el actual.">?</span></strong>
                 <?php if ( empty( $events_with_layout ) ) : ?>
                     <span style="color:#777;font-size:13px;">No hay otros eventos con mapa guardado.</span>

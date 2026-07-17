@@ -40,6 +40,7 @@
 
   // ─── State ────────────────────────────────────────────────────
   var selectedSeats = [];
+  var pendingReservationId = null; // reserva por cantidad que se está vendiendo (modo sin mapa)
   var currentMode   = 'reservar'; // 'reservar' | 'vender' | 'liberar'
   var soldSet       = {};
   var reservedSet   = {};
@@ -51,7 +52,7 @@
   var seats         = [];
   var stage, seatLayer, zoneColorMap;
   var bo = window.ssBoxOffice || {};
-  var saleMode = bo.saleMode || 'seat'; // 'seat' | 'zone' | 'hybrid'
+  var saleMode = bo.saleMode || 'seat'; // 'seat' | 'zone' | 'hybrid' | 'no_map'
 
   // ─── Floor state ─────────────────────────────────────────────
   var _rawLayout     = null;  // full layout data (may have floors[])
@@ -72,7 +73,7 @@
       }];
     }
     var hasLayout = hasKonva && _rawLayout && _rawLayout.floors && _rawLayout.floors.length > 0;
-    var showMap   = hasLayout;
+    var showMap   = hasLayout && saleMode !== 'no_map';
 
     var container   = document.getElementById('bo-konva-container');
     var legend      = document.getElementById('bo-legend');
@@ -80,10 +81,17 @@
 
     // ── Show/hide sections based on sale mode ────────────────
     if (saleMode === 'zone') {
-      // Zone: show map (view-only) + ticket controls
+      // Zone: ticket controls only, no seat clicking
       if (zoneTickets) zoneTickets.style.display = '';
-      // Hide reservar/liberar — only vender in zone mode
+      // Hide reservar/liberar — only vender por cantidad
       hideModesForZoneOnly();
+    } else if (saleMode === 'no_map') {
+      // Sin mapa: ticket controls + reservar/vender por cantidad.
+      // "Liberar" queda oculto: las reservas por cantidad se liberan desde
+      // el panel Reservas (botón Liberar de cada tarjeta), no seleccionando.
+      if (zoneTickets) zoneTickets.style.display = '';
+      var liberarBtn = document.querySelector('.bo-toolbar__mode[data-mode="liberar"]');
+      if (liberarBtn) liberarBtn.style.display = 'none';
     } else if (saleMode === 'hybrid') {
       // Both map + ticket controls
       if (zoneTickets) zoneTickets.style.display = '';
@@ -96,7 +104,7 @@
     }
 
     // ── Zone ticket controls ─────────────────────────────────
-    if (saleMode === 'zone' || saleMode === 'hybrid') {
+    if (saleMode === 'zone' || saleMode === 'hybrid' || saleMode === 'no_map') {
       initZoneTicketControls();
     }
 
@@ -517,7 +525,7 @@
     if (!info || !btn) return;
 
     var seatCount = selectedSeats.length;
-    var zoneQty   = (saleMode === 'zone' || saleMode === 'hybrid') ? getTotalZoneQty() : 0;
+    var zoneQty   = (saleMode === 'zone' || saleMode === 'hybrid' || saleMode === 'no_map') ? getTotalZoneQty() : 0;
     var total     = seatCount + zoneQty;
 
     if (total === 0) {
@@ -585,13 +593,13 @@
     }
 
     var seatCount = selectedSeats.length;
-    var zoneQty   = (saleMode === 'zone' || saleMode === 'hybrid') ? getTotalZoneQty() : 0;
+    var zoneQty   = (saleMode === 'zone' || saleMode === 'hybrid' || saleMode === 'no_map') ? getTotalZoneQty() : 0;
     btn.disabled = (seatCount + zoneQty) === 0;
   }
 
   function onActionClick() {
     var seatCount = selectedSeats.length;
-    var zoneQty   = (saleMode === 'zone' || saleMode === 'hybrid') ? getTotalZoneQty() : 0;
+    var zoneQty   = (saleMode === 'zone' || saleMode === 'hybrid' || saleMode === 'no_map') ? getTotalZoneQty() : 0;
     if (seatCount + zoneQty === 0) return;
 
     if (currentMode === 'reservar') {
@@ -633,7 +641,13 @@
     var btn = document.getElementById('bo-action-btn');
     if (btn) { btn.disabled = true; btn.textContent = 'Reservando...'; }
 
-    ajaxPost('reserve', { reserve_nombre: nombre || '', reserve_telefono: telefono || '' }).then(function (res) {
+    var extra = { reserve_nombre: nombre || '', reserve_telefono: telefono || '' };
+    var zoneQtys = (saleMode === 'zone' || saleMode === 'hybrid' || saleMode === 'no_map') ? getZoneTicketQtys() : {};
+    if (!selectedSeats.length && Object.keys(zoneQtys).length > 0) {
+      extra.ticket_qtys = JSON.stringify(zoneQtys);
+    }
+
+    ajaxPost('reserve', extra).then(function (res) {
       if (res.success) {
         showToast(res.data.message, 'success');
       } else {
@@ -641,6 +655,7 @@
       }
       closeReserveModal();
       clearSelection();
+      resetZoneTicketQtys();
       refreshState();
       refreshLog();
       refreshReservations();
@@ -679,9 +694,12 @@
     if (btn) { btn.disabled = true; btn.textContent = 'Procesando...'; }
 
     // Append zone ticket qtys if any
-    var zoneQtys = (saleMode === 'zone' || saleMode === 'hybrid') ? getZoneTicketQtys() : {};
+    var zoneQtys = (saleMode === 'zone' || saleMode === 'hybrid' || saleMode === 'no_map') ? getZoneTicketQtys() : {};
     if (Object.keys(zoneQtys).length > 0) {
       formData.ticket_qtys = JSON.stringify(zoneQtys);
+    }
+    if (pendingReservationId) {
+      formData.reservation_id = pendingReservationId;
     }
 
     ajaxPost('sell', formData).then(function (res) {
@@ -691,6 +709,7 @@
       } else {
         showToast(res.data || 'Error al vender', 'error');
       }
+      pendingReservationId = null;
       clearSelection();
       resetZoneTicketQtys();
       refreshState();
@@ -714,7 +733,14 @@
     var seatsEl = document.getElementById('bo-reserve-seats');
     if (!modal) { doReserve(''); return; } // fallback si no existe el modal en el DOM
     if (seatsEl) {
-      seatsEl.textContent = selectedSeats.length > 0 ? 'Sillas: ' + selectedSeats.join(', ') : '';
+      if (selectedSeats.length > 0) {
+        seatsEl.textContent = 'Sillas: ' + selectedSeats.join(', ');
+      } else {
+        var zq = getZoneTicketQtys();
+        var parts = [];
+        Object.keys(zq).forEach(function (k) { parts.push(k + ' x' + zq[k]); });
+        seatsEl.textContent = parts.length ? 'Tickets: ' + parts.join(', ') : '';
+      }
     }
     var inp = document.getElementById('bo-reserve-nombre');
     if (inp) { inp.value = ''; }
@@ -799,7 +825,7 @@
 
     // Show zone tickets info
     if (ticketsEl) {
-      var qtys = (saleMode === 'zone' || saleMode === 'hybrid') ? getZoneTicketQtys() : {};
+      var qtys = (saleMode === 'zone' || saleMode === 'hybrid' || saleMode === 'no_map') ? getZoneTicketQtys() : {};
       var keys = Object.keys(qtys);
       if (keys.length > 0) {
         var parts = [];
@@ -830,7 +856,7 @@
     if (qrModeSelect) {
       // Mostrar selector si hay más de 1 asiento O si hay tickets de zona con qty > 1
       var totalTickets = 0;
-      var zqtys = (saleMode === 'zone' || saleMode === 'hybrid') ? getZoneTicketQtys() : {};
+      var zqtys = (saleMode === 'zone' || saleMode === 'hybrid' || saleMode === 'no_map') ? getZoneTicketQtys() : {};
       var zkeys = Object.keys(zqtys);
       for (var zi = 0; zi < zkeys.length; zi++) { totalTickets += parseInt(zqtys[zkeys[zi]], 10) || 0; }
       var show = selectedSeats.length > 1 || totalTickets > 1;
@@ -855,7 +881,7 @@
     var qty = 0;
     var unitPrice = 0;
 
-    if (saleMode === 'zone' || saleMode === 'hybrid') {
+    if (saleMode === 'zone' || saleMode === 'hybrid' || saleMode === 'no_map') {
       var zqtys = getZoneTicketQtys();
       var zkeys = Object.keys(zqtys);
       for (var zi = 0; zi < zkeys.length; zi++) {
@@ -1823,12 +1849,17 @@
         var html = '';
         for (var i = 0; i < reservationsCache.length; i++) {
           var r = reservationsCache[i];
+          var isTickets = r.type === 'tickets';
           html += '<div class="bo-reservation">';
           html += '<div class="bo-reservation__name">' + escHtml(r.nombre || '(sin nombre)') + '</div>';
           if (r.telefono) {
             html += '<div class="bo-reservation__phone">' + escHtml(r.telefono) + '</div>';
           }
-          html += '<div class="bo-reservation__seats">Sillas: ' + escHtml(r.seats.join(', ')) + '</div>';
+          if (isTickets) {
+            html += '<div class="bo-reservation__seats">' + escHtml(r.zone) + ' x' + r.qty + '</div>';
+          } else {
+            html += '<div class="bo-reservation__seats">Sillas: ' + escHtml(r.seats.join(', ')) + '</div>';
+          }
           html += '<div class="bo-reservation__actions">';
           html += '<button type="button" class="bo-reservation__sell" data-idx="' + i + '">Vender</button>';
           html += '<button type="button" class="bo-reservation__release" data-idx="' + i + '">Liberar</button>';
@@ -1856,7 +1887,14 @@
   }
 
   function sellReservation(reservation) {
-    selectedSeats = reservation.seats.slice();
+    if (reservation.type === 'tickets') {
+      pendingReservationId = reservation.id;
+      var row = document.querySelector('.bo-zone-ticket[data-ticket="' + reservation.zone + '"]');
+      var input = row ? row.querySelector('.bo-zone-ticket__qty') : null;
+      if (input) { input.value = reservation.qty; }
+    } else {
+      selectedSeats = reservation.seats.slice();
+    }
     openSellModal();
     var nombreInp = document.getElementById('bo-sell-nombre');
     if (nombreInp) { nombreInp.value = reservation.nombre || ''; }
@@ -1865,6 +1903,24 @@
   }
 
   function releaseReservation(reservation) {
+    if (reservation.type === 'tickets') {
+      if (!confirm('¿Liberar la reserva de ' + (reservation.nombre || 'esta reserva') + '?\n\n' + reservation.zone + ' x' + reservation.qty)) {
+        return;
+      }
+      ajaxPost('release_tickets', { reservation_id: reservation.id }).then(function (res) {
+        if (res.success) {
+          showToast(res.data.message, 'success');
+        } else {
+          showToast(res.data || 'Error al liberar', 'error');
+        }
+        refreshState();
+        refreshLog();
+        refreshReservations();
+      }).catch(function () {
+        showToast('Error de conexión', 'error');
+      });
+      return;
+    }
     if (!confirm('¿Liberar las sillas de ' + (reservation.nombre || 'esta reserva') + '?\n\nSillas: ' + reservation.seats.join(', '))) {
       return;
     }
