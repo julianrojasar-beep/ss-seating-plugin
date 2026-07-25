@@ -160,7 +160,7 @@ class SS_Difusion {
 
     public static function get_channels(): array {
         return array(
-            'whatsapp'      => array( 'label' => 'WhatsApp',      'source' => 'meta',      'medium' => 'whatsapp' ),
+            'whatsapp'      => array( 'label' => 'WhatsApp',      'source' => 'whatsapp',  'medium' => 'chat' ),
             'instagram_bio' => array( 'label' => 'Instagram Bio', 'source' => 'instagram', 'medium' => 'bio' ),
             'qr'            => array( 'label' => 'QR / Poster',   'source' => 'qr',        'medium' => 'poster' ),
         );

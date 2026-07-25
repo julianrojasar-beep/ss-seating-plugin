@@ -113,6 +113,7 @@
     initReserveModal();
     initSellModal();
     initSuccessModal();
+    initEditSaleModal();
 
     // ── Sidebar tabs ────────────────────────────────────────
     initSidebarTabs();
@@ -779,13 +780,98 @@
   //  SELL MODAL
   // ═══════════════════════════════════════════════════════════════
 
+  var lastRefSubtotal = 0;
+  var priceWarningAcknowledged = false;
+
+  function parseValorInput(str) {
+    return parseInt(String(str || '').replace(/\D/g, ''), 10) || 0;
+  }
+
+  function formatValorInput(el) {
+    if (!el) return;
+    var n = parseValorInput(el.value);
+    el.value = n > 0 ? n.toLocaleString('es-CO') : '';
+  }
+
+  function getSellMode() {
+    try { return localStorage.getItem('ss_bo_sell_mode') || 'quick'; } catch (e) { return 'quick'; }
+  }
+
+  function toggleSellMode(mode) {
+    var modal = document.getElementById('bo-sell-modal');
+    if (!modal) return;
+    modal.classList.toggle('bo-quick-mode', mode === 'quick');
+    var buttons = document.querySelectorAll('#bo-sell-mode-toggle .bo-sell-mode-toggle__btn');
+    buttons.forEach(function (btn) {
+      btn.classList.toggle('active', btn.getAttribute('data-mode') === mode);
+    });
+    try { localStorage.setItem('ss_bo_sell_mode', mode); } catch (e) { /* ignore */ }
+    if (mode === 'quick') {
+      document.getElementById('bo-sell-qrmode').value = 'order';
+      var notaInput = document.getElementById('bo-sell-nota');
+      if (notaInput) notaInput.value = '';
+      var origenInput = document.getElementById('bo-sell-origen');
+      if (origenInput) origenInput.value = '';
+    }
+    updateValorCobrado();
+  }
+
+  function calcRefSubtotal() {
+    var qty = 0;
+    var unitPrice = 0;
+
+    if (saleMode === 'zone' || saleMode === 'hybrid' || saleMode === 'no_map') {
+      var zqtys = getZoneTicketQtys();
+      var zkeys = Object.keys(zqtys);
+      for (var zi = 0; zi < zkeys.length; zi++) {
+        qty += parseInt(zqtys[zkeys[zi]], 10) || 0;
+        if (ssBoxOffice && ssBoxOffice.ticketTypes) {
+          for (var ti = 0; ti < ssBoxOffice.ticketTypes.length; ti++) {
+            var tt = ssBoxOffice.ticketTypes[ti];
+            if (tt.zone === zkeys[zi]) { unitPrice = parseFloat(tt.price) || 0; break; }
+          }
+        }
+      }
+    } else {
+      qty = selectedSeats.length;
+      if (ssBoxOffice && ssBoxOffice.ticketTypes && ssBoxOffice.ticketTypes.length > 0) {
+        unitPrice = parseFloat(ssBoxOffice.ticketTypes[0].price) || 0;
+      }
+    }
+
+    return { qty: qty, unitPrice: unitPrice, subtotal: qty * unitPrice };
+  }
+
   function initSellModal() {
     var cancel  = document.getElementById('bo-sell-cancel');
     var confirm = document.getElementById('bo-sell-confirm');
+    var valorInput = document.getElementById('bo-valor-input');
 
     if (cancel) {
       cancel.addEventListener('click', closeSellModal);
     }
+
+    document.querySelectorAll('#bo-sell-mode-toggle .bo-sell-mode-toggle__btn').forEach(function (btn) {
+      btn.addEventListener('click', function () { toggleSellMode(btn.getAttribute('data-mode')); });
+    });
+
+    if (valorInput) {
+      valorInput.addEventListener('input', function () {
+        var val = parseValorInput(valorInput.value);
+        priceWarningAcknowledged = false;
+        var warnEl = document.getElementById('bo-valor-warning');
+        if (warnEl) {
+          if (lastRefSubtotal > 0 && val < lastRefSubtotal) {
+            warnEl.textContent = '⚠ Cobrando $' + val.toLocaleString('es-CO') + ' — menos que el precio de lista ($' + lastRefSubtotal.toLocaleString('es-CO') + ')';
+            warnEl.style.display = '';
+          } else {
+            warnEl.style.display = 'none';
+          }
+        }
+      });
+      valorInput.addEventListener('blur', function () { formatValorInput(valorInput); });
+    }
+
     if (confirm) {
       confirm.addEventListener('click', function () {
         var nombre = document.getElementById('bo-sell-nombre').value.trim();
@@ -793,13 +879,23 @@
           showToast('El nombre es obligatorio', 'error');
           return;
         }
+
+        var valor = parseValorInput(document.getElementById('bo-valor-input').value);
+        var warnEl = document.getElementById('bo-valor-warning');
+        var warningActive = warnEl && warnEl.style.display !== 'none' && lastRefSubtotal > 0 && valor < lastRefSubtotal;
+        if (warningActive && !priceWarningAcknowledged) {
+          var ok = window.confirm('Estás cobrando $' + valor.toLocaleString('es-CO') + ', menos que el precio de lista ($' + lastRefSubtotal.toLocaleString('es-CO') + ').\n\n¿Confirmar de todas formas?');
+          if (!ok) return;
+          priceWarningAcknowledged = true;
+        }
+
         doSell({
           nombre:        nombre,
           correo:        document.getElementById('bo-sell-correo').value.trim(),
           telefono:      document.getElementById('bo-sell-telefono').value.trim(),
           metodo_pago:   document.getElementById('bo-sell-metodo').value,
           qr_mode:       document.getElementById('bo-sell-qrmode').value,
-          valor_cobrado: (parseInt(document.getElementById('bo-valor-input').value, 10) || 0),
+          valor_cobrado: valor,
           nota_bo:       (document.getElementById('bo-sell-nota') ? document.getElementById('bo-sell-nota').value.trim() : ''),
           origen_venta:  (document.getElementById('bo-sell-origen') ? document.getElementById('bo-sell-origen').value : ''),
         });
@@ -842,13 +938,14 @@
     document.getElementById('bo-sell-correo').value = '';
     document.getElementById('bo-sell-telefono').value = '';
     document.getElementById('bo-sell-metodo').value = 'efectivo';
-    var valorInput = document.getElementById('bo-valor-input');
-    if (valorInput) valorInput.value = '';
     var notaInput = document.getElementById('bo-sell-nota');
     if (notaInput) notaInput.value = '';
     var origenInput = document.getElementById('bo-sell-origen');
     if (origenInput) origenInput.value = '';
     document.getElementById('bo-sell-qrmode').value = 'order';
+    priceWarningAcknowledged = false;
+    var warnEl = document.getElementById('bo-valor-warning');
+    if (warnEl) warnEl.style.display = 'none';
 
     // Show/hide QR mode selector — only relevant when there are seats
     var qrModeSelect = document.getElementById('bo-sell-qrmode');
@@ -864,10 +961,17 @@
       if (qrModeLabel) qrModeLabel.style.display = show ? '' : 'none';
     }
 
+    toggleSellMode(getSellMode());
     modal.classList.add('open');
 
-    // Actualizar calculadora
+    // Actualizar calculadora (y prellenar valor cobrado con la referencia)
     updateValorCobrado();
+    var valorInput = document.getElementById('bo-valor-input');
+    if (valorInput) {
+      valorInput.value = lastRefSubtotal > 0 ? lastRefSubtotal.toLocaleString('es-CO') : '';
+    }
+
+    document.getElementById('bo-sell-nombre').focus();
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -878,35 +982,15 @@
     var el = document.getElementById('bo-valor-cobrado');
     if (!el) return;
 
-    var qty = 0;
-    var unitPrice = 0;
+    var ref = calcRefSubtotal();
+    lastRefSubtotal = Math.round(ref.subtotal);
 
-    if (saleMode === 'zone' || saleMode === 'hybrid' || saleMode === 'no_map') {
-      var zqtys = getZoneTicketQtys();
-      var zkeys = Object.keys(zqtys);
-      for (var zi = 0; zi < zkeys.length; zi++) {
-        qty += parseInt(zqtys[zkeys[zi]], 10) || 0;
-        if (ssBoxOffice && ssBoxOffice.ticketTypes) {
-          for (var ti = 0; ti < ssBoxOffice.ticketTypes.length; ti++) {
-            var tt = ssBoxOffice.ticketTypes[ti];
-            if (tt.zone === zkeys[zi]) { unitPrice = parseFloat(tt.price) || 0; break; }
-          }
-        }
-      }
-    } else {
-      qty = selectedSeats.length;
-      if (ssBoxOffice && ssBoxOffice.ticketTypes && ssBoxOffice.ticketTypes.length > 0) {
-        unitPrice = parseFloat(ssBoxOffice.ticketTypes[0].price) || 0;
-      }
-    }
-
-    if (qty <= 0) { el.style.display = 'none'; return; }
+    if (ref.qty <= 0) { el.style.display = 'none'; return; }
     el.style.display = '';
 
     var refEl = document.getElementById('bo-valor-ref');
-    if (refEl && unitPrice > 0) {
-      var subtotal = qty * unitPrice;
-      refEl.textContent = 'Referencia: $' + Math.round(subtotal).toLocaleString('es-CO') + ' (' + qty + ' × $' + Math.round(unitPrice).toLocaleString('es-CO') + ')';
+    if (refEl && ref.unitPrice > 0) {
+      refEl.textContent = 'Referencia: $' + Math.round(ref.subtotal).toLocaleString('es-CO') + ' (' + ref.qty + ' × $' + Math.round(ref.unitPrice).toLocaleString('es-CO') + ')';
     } else if (refEl) {
       refEl.textContent = '';
     }
@@ -961,6 +1045,14 @@
 
     detail.innerHTML = detailHtml;
 
+    // Botón "Marcar ingresado"
+    var checkinBtn = document.getElementById('bo-success-checkin');
+    if (checkinBtn) {
+      checkinBtn.disabled = false;
+      checkinBtn.textContent = '✓ Marcar ingresado';
+      checkinBtn.style.display = lastOrderId ? '' : 'none';
+    }
+
     // Show QRs
     qrBox.innerHTML = '';
     var seatKeys = Object.keys(lastSeatQrs);
@@ -1007,8 +1099,39 @@
   function initSuccessModal() {
     var closeBtn    = document.getElementById('bo-success-close');
     var downloadBtn = document.getElementById('bo-success-download');
+    var checkinBtn  = document.getElementById('bo-success-checkin');
     if (closeBtn)    { closeBtn.addEventListener('click', closeSuccessModal); }
     if (downloadBtn) { downloadBtn.addEventListener('click', downloadQR); }
+    if (checkinBtn)  { checkinBtn.addEventListener('click', function () { doManualCheckin(lastOrderId, checkinBtn); }); }
+  }
+
+  function doManualCheckin(orderId, btn) {
+    if (!orderId) return;
+    if (btn) { btn.disabled = true; btn.textContent = 'Marcando...'; }
+
+    var fd = new FormData();
+    fd.append('action', 'ss_boxoffice_manual_checkin');
+    fd.append('nonce', getNonce());
+    fd.append('event_id', bo.eventId);
+    fd.append('order_id', orderId);
+    fd.append('bo_user', bo.user);
+
+    fetch(bo.ajaxUrl, { method: 'POST', body: fd, credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (res) {
+        if (res.success) {
+          showToast(res.data.message || 'Ingreso registrado', 'success');
+          if (btn) { btn.textContent = '✓ Ingresó'; }
+          refreshOrders();
+        } else {
+          showToast(res.data || 'Error al marcar ingreso', 'error');
+          if (btn) { btn.disabled = false; btn.textContent = '✓ Marcar ingresado'; }
+        }
+      })
+      .catch(function () {
+        showToast('Error de conexión', 'error');
+        if (btn) { btn.disabled = false; btn.textContent = '✓ Marcar ingresado'; }
+      });
   }
 
   function closeSuccessModal() {
@@ -1750,6 +1873,12 @@
           if (o.qr_url) {
             html += '<button type="button" class="bo-order__qr-btn" data-order-id="' + o.id + '" data-qr="' + escHtml(o.qr_url) + '">⬇ QR</button>';
           }
+          html += '<button type="button" class="bo-order__edit" data-order-id="' + o.id + '">Editar valor</button>';
+          if (o.checked_in) {
+            html += '<span class="bo-order__checkin-badge">✓ Ingresó</span>';
+          } else {
+            html += '<button type="button" class="bo-order__checkin" data-order-id="' + o.id + '">Marcar ingresado</button>';
+          }
           html += '<button type="button" class="bo-order__cancel" data-order-id="' + o.id + '">Cancelar pedido</button>';
           html += '</div>';
           html += '</div>';
@@ -1770,6 +1899,22 @@
               seats:     o.seats || [],
               zones:     o.zones || [],
             });
+          });
+        });
+
+        // Bind edit-value buttons
+        list.querySelectorAll('.bo-order__edit').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var orderId = parseInt(btn.getAttribute('data-order-id'), 10);
+            openEditSaleModal(orderId);
+          });
+        });
+
+        // Bind manual check-in buttons
+        list.querySelectorAll('.bo-order__checkin').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var orderId = parseInt(btn.getAttribute('data-order-id'), 10);
+            doManualCheckin(orderId, btn);
           });
         });
 
@@ -1818,6 +1963,87 @@
         btn.disabled = false;
         btn.textContent = 'Cancelar pedido';
       });
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  //  EDIT SALE MODAL
+  // ═══════════════════════════════════════════════════════════════
+
+  var editSaleOrderId = 0;
+
+  function openEditSaleModal(orderId) {
+    var o = ordersCache[orderId];
+    var modal = document.getElementById('bo-edit-sale-modal');
+    var info  = document.getElementById('bo-edit-sale-info');
+    var valorInput = document.getElementById('bo-edit-valor-input');
+    var notaInput  = document.getElementById('bo-edit-nota-input');
+    if (!modal) return;
+
+    editSaleOrderId = orderId;
+    if (info) { info.textContent = 'Pedido #' + orderId + (o ? ' — ' + o.customer : ''); }
+    if (valorInput) { valorInput.value = o && o.valor_cobrado ? parseInt(o.valor_cobrado, 10).toLocaleString('es-CO') : ''; }
+    if (notaInput)  { notaInput.value = o && o.nota_bo ? o.nota_bo : ''; }
+
+    modal.classList.add('open');
+    if (valorInput) { valorInput.focus(); }
+  }
+
+  function closeEditSaleModal() {
+    var modal = document.getElementById('bo-edit-sale-modal');
+    if (modal) { modal.classList.remove('open'); }
+  }
+
+  function doEditSale(orderId, valor, nota, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = 'Guardando...'; }
+
+    var fd = new FormData();
+    fd.append('action', 'ss_boxoffice_edit_sale');
+    fd.append('nonce', getNonce());
+    fd.append('event_id', bo.eventId);
+    fd.append('order_id', orderId);
+    fd.append('valor_cobrado', valor);
+    fd.append('nota', nota);
+    fd.append('bo_user', bo.user);
+
+    fetch(bo.ajaxUrl, { method: 'POST', body: fd, credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (res) {
+        if (btn) { btn.disabled = false; btn.textContent = 'Guardar'; }
+        if (res.success) {
+          showToast(res.data.message || 'Venta actualizada', 'success');
+          closeEditSaleModal();
+          refreshOrders();
+          refreshLog();
+        } else {
+          showToast(res.data || 'Error al editar', 'error');
+        }
+      })
+      .catch(function () {
+        showToast('Error de conexión', 'error');
+        if (btn) { btn.disabled = false; btn.textContent = 'Guardar'; }
+      });
+  }
+
+  function initEditSaleModal() {
+    var cancel  = document.getElementById('bo-edit-sale-cancel');
+    var confirm = document.getElementById('bo-edit-sale-confirm');
+    var valorInput = document.getElementById('bo-edit-valor-input');
+
+    if (cancel) { cancel.addEventListener('click', closeEditSaleModal); }
+    if (valorInput) {
+      valorInput.addEventListener('blur', function () { formatValorInput(valorInput); });
+    }
+    if (confirm) {
+      confirm.addEventListener('click', function () {
+        var valor = parseValorInput(document.getElementById('bo-edit-valor-input').value);
+        var nota  = document.getElementById('bo-edit-nota-input').value.trim();
+        if (valor < 0) {
+          showToast('El valor no puede ser negativo', 'error');
+          return;
+        }
+        doEditSale(editSaleOrderId, valor, nota, confirm);
+      });
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════

@@ -3,7 +3,7 @@
  * Plugin Name: SS Seating
  * Plugin URI: https://tusitio.com
  * Description: Sistema de selección de sillas y venta de boletas con QR para eventos.
- * Version: 1.3.16
+ * Version: 1.3.17
  * Author: Julian Rojas
  * Author URI: https://tusitio.com
  * License: GPL v2 or later
@@ -9546,17 +9546,20 @@ function ss_boxoffice_ajax_get_orders(): void {
         }
 
         $orders[] = array(
-            'id'       => $oid,
-            'status'   => $order->get_status(),
-            'customer' => $order->get_billing_first_name() . ' ' . $order->get_billing_last_name(),
-            'email'    => $order->get_billing_email(),
-            'total'    => $order->get_total(),
-            'currency' => $order->get_currency(),
-            'date'     => $order->get_date_created() ? $order->get_date_created()->date( 'd/m/Y H:i' ) : '',
-            'seats'    => $seats,
-            'zones'    => $zones,
-            'method'   => $order->get_payment_method_title(),
-            'qr_url'   => $qr_url ?: '',
+            'id'            => $oid,
+            'status'        => $order->get_status(),
+            'customer'      => $order->get_billing_first_name() . ' ' . $order->get_billing_last_name(),
+            'email'         => $order->get_billing_email(),
+            'total'         => $order->get_total(),
+            'currency'      => $order->get_currency(),
+            'date'          => $order->get_date_created() ? $order->get_date_created()->date( 'd/m/Y H:i' ) : '',
+            'seats'         => $seats,
+            'zones'         => $zones,
+            'method'        => $order->get_payment_method_title(),
+            'qr_url'        => $qr_url ?: '',
+            'checked_in'    => get_post_meta( $oid, '_ss_checked_in', true ) === 'yes',
+            'valor_cobrado' => (int) $order->get_meta( '_ss_valor_cobrado' ),
+            'nota_bo'       => (string) $order->get_meta( '_ss_nota_bo' ),
         );
     }
 
@@ -9619,6 +9622,99 @@ function ss_boxoffice_ajax_cancel_order(): void {
     wp_send_json_success( array(
         'message'   => 'Pedido #' . $order_id . ' cancelado',
         'refund_id' => $refund_id,
+    ) );
+}
+
+// ── Box Office: marcar ingreso manual (sin escanear QR) ──────────────────────
+add_action( 'wp_ajax_ss_boxoffice_manual_checkin',       'ss_boxoffice_ajax_manual_checkin' );
+add_action( 'wp_ajax_nopriv_ss_boxoffice_manual_checkin', 'ss_boxoffice_ajax_manual_checkin' );
+
+function ss_boxoffice_ajax_manual_checkin(): void {
+    $event_id = (int) ( $_POST['event_id'] ?? 0 );
+    $order_id = (int) ( $_POST['order_id'] ?? 0 );
+    check_ajax_referer( 'ss_boxoffice_nonce', 'nonce' );
+
+    $user = ss_boxoffice_check_auth();
+    if ( ! $user ) { wp_send_json_error( 'No autorizado', 401 ); }
+    if ( ! $event_id || ! $order_id ) { wp_send_json_error( 'Datos incompletos' ); }
+
+    $order = wc_get_order( $order_id );
+    if ( ! $order ) { wp_send_json_error( 'Pedido no encontrado' ); }
+
+    if ( ss_get_event_id_from_order( $order ) !== $event_id ) {
+        wp_send_json_error( 'El pedido no pertenece a este evento' );
+    }
+
+    if ( get_post_meta( $order_id, '_ss_checked_in', true ) === 'yes' ) {
+        wp_send_json_error( 'Este pedido ya fue marcado como ingresado' );
+    }
+
+    update_post_meta( $order_id, '_ss_checked_in', 'yes' );
+    update_post_meta( $order_id, '_ss_checked_in_time', current_time( 'mysql' ) );
+    $order->add_order_note( sprintf( 'Ingreso registrado manualmente en Box Office por %s.', $user ) );
+
+    $seats = ss_seats_get_from_order( $order_id );
+    ss_boxoffice_log( $event_id, $user, 'checkin_manual', $seats, $order_id );
+
+    wp_send_json_success( array(
+        'message' => 'Ingreso registrado para el pedido #' . $order_id,
+    ) );
+}
+
+// ── Box Office: corregir valor cobrado / nota de una venta ya registrada ─────
+add_action( 'wp_ajax_ss_boxoffice_edit_sale',       'ss_boxoffice_ajax_edit_sale' );
+add_action( 'wp_ajax_nopriv_ss_boxoffice_edit_sale', 'ss_boxoffice_ajax_edit_sale' );
+
+function ss_boxoffice_ajax_edit_sale(): void {
+    $event_id      = (int) ( $_POST['event_id'] ?? 0 );
+    $order_id      = (int) ( $_POST['order_id'] ?? 0 );
+    $valor_cobrado = (int) ( $_POST['valor_cobrado'] ?? 0 );
+    $nota          = sanitize_text_field( wp_unslash( $_POST['nota'] ?? '' ) );
+    check_ajax_referer( 'ss_boxoffice_nonce', 'nonce' );
+
+    $user = ss_boxoffice_check_auth();
+    if ( ! $user ) { wp_send_json_error( 'No autorizado', 401 ); }
+    if ( ! $event_id || ! $order_id || $valor_cobrado < 0 ) { wp_send_json_error( 'Datos incompletos' ); }
+
+    $order = wc_get_order( $order_id );
+    if ( ! $order ) { wp_send_json_error( 'Pedido no encontrado' ); }
+
+    if ( ss_get_event_id_from_order( $order ) !== $event_id ) {
+        wp_send_json_error( 'El pedido no pertenece a este evento' );
+    }
+    if ( $order->get_meta( '_ss_boxoffice_sale' ) !== 'yes' ) {
+        wp_send_json_error( 'Solo se pueden editar ventas registradas en Box Office' );
+    }
+
+    $old_valor = (int) $order->get_meta( '_ss_valor_cobrado' );
+
+    $items = $order->get_items();
+    $item  = $items ? reset( $items ) : null;
+    if ( $item ) {
+        $item->set_subtotal( (string) $valor_cobrado );
+        $item->set_total( (string) $valor_cobrado );
+        $item->save();
+    }
+
+    $order->update_meta_data( '_ss_valor_cobrado', $valor_cobrado );
+    $order->update_meta_data( '_ss_nota_bo', $nota );
+    $order->calculate_totals();
+
+    $order->add_order_note( sprintf(
+        'Valor cobrado editado por %s en Box Office: $%s → $%s.%s',
+        $user,
+        number_format( $old_valor, 0, ',', '.' ),
+        number_format( $valor_cobrado, 0, ',', '.' ),
+        $nota !== '' ? ' Nota: ' . $nota : ''
+    ) );
+    $order->save();
+
+    $seats = ss_seats_get_from_order( $order_id );
+    ss_boxoffice_log( $event_id, $user, 'editar_valor · $' . number_format( $valor_cobrado, 0, ',', '.' ), $seats, $order_id );
+    ss_litespeed_purge_event( $event_id );
+
+    wp_send_json_success( array(
+        'message' => 'Venta del pedido #' . $order_id . ' actualizada',
     ) );
 }
 
@@ -10183,7 +10279,13 @@ a{color:#64b5f6;text-decoration:none}
 .bo-order__cancel:disabled{opacity:.5;cursor:not-allowed}
 .bo-order__qr-btn{padding:5px 12px;border-radius:6px;border:1px solid #1565c0;background:rgba(21,101,192,.15);color:#90caf9;font-size:11px;font-weight:600;cursor:pointer;transition:all .15s}
 .bo-order__qr-btn:hover{background:#1565c0;color:#fff}
-.bo-order__cancel:active,.bo-order__qr-btn:active{transform:scale(.95)}
+.bo-order__edit{padding:5px 12px;border-radius:6px;border:1px solid #7c3aed;background:rgba(124,58,237,.15);color:#b794f6;font-size:11px;font-weight:600;cursor:pointer;transition:all .15s}
+.bo-order__edit:hover{background:#7c3aed;color:#fff}
+.bo-order__checkin{padding:5px 12px;border-radius:6px;border:1px solid #2e7d32;background:rgba(46,125,50,.15);color:#81c784;font-size:11px;font-weight:600;cursor:pointer;transition:all .15s}
+.bo-order__checkin:hover{background:#2e7d32;color:#fff}
+.bo-order__checkin:disabled{opacity:.5;cursor:not-allowed}
+.bo-order__checkin-badge{padding:5px 12px;border-radius:6px;border:1px solid #2e7d32;background:rgba(46,125,50,.25);color:#81c784;font-size:11px;font-weight:700}
+.bo-order__cancel:active,.bo-order__qr-btn:active,.bo-order__edit:active,.bo-order__checkin:active{transform:scale(.95)}
 
 /* ── Reservas ───────────────────────────────────── */
 .bo-reservation{padding:10px 12px;border-radius:8px;margin-bottom:6px;background:rgba(144,202,249,.06);border:1px solid #2a2a4a}
@@ -10272,6 +10374,14 @@ a{color:#64b5f6;text-decoration:none}
 .bo-valor-cobrado input{flex:1;padding:8px 10px;background:#16213e;border:1px solid #333;border-radius:8px;color:#fff;font-size:20px;font-weight:700;outline:none;width:100%;box-sizing:border-box}
 .bo-valor-cobrado input:focus{border-color:#7c3aed}
 .bo-valor__ref{display:block;color:#6b7280;font-size:11px;margin-top:6px}
+.bo-valor__warning{display:block;color:#ffb74d;font-size:12px;font-weight:600;margin-top:8px;background:rgba(255,183,77,.1);border:1px solid rgba(255,183,77,.3);border-radius:6px;padding:6px 8px}
+
+/* ── Venta Rápida toggle + campos opcionales ────── */
+.bo-sell-mode-toggle{display:flex;gap:8px;margin-bottom:16px}
+.bo-sell-mode-toggle__btn{flex:1;padding:10px;min-height:44px;border-radius:8px;border:1px solid #333;background:#16213e;color:#aaa;font-size:13px;font-weight:600;cursor:pointer;transition:all .15s}
+.bo-sell-mode-toggle__btn.active{background:#7c3aed;border-color:#7c3aed;color:#fff}
+.bo-sell-mode-toggle__btn:active{transform:scale(.97)}
+.bo-quick-mode .bo-field--optional{display:none}
 
 /* ── Success modal ──────────────────────────────── */
 .bo-success-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:1000;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto}
@@ -10281,6 +10391,9 @@ a{color:#64b5f6;text-decoration:none}
 .bo-success__detail{font-size:13px;color:#ccc;line-height:1.8;margin-bottom:16px;text-align:left}
 .bo-success__detail strong{color:#fff}
 .bo-success__qr{margin:16px auto;background:#fff;padding:12px;border-radius:10px;display:inline-block}
+.bo-success__checkin{display:block;width:100%;padding:12px;min-height:44px;margin-top:6px;border:1px solid #2e7d32;border-radius:8px;background:rgba(46,125,50,.15);color:#81c784;font-size:14px;font-weight:700;cursor:pointer;transition:all .15s}
+.bo-success__checkin:hover{background:#2e7d32;color:#fff}
+.bo-success__checkin:disabled{opacity:.6;cursor:not-allowed}
 .bo-success__actions{display:flex;gap:10px;margin-top:20px}
 .bo-success__actions button{flex:1;padding:10px;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:all .15s}
 .bo-success__download{background:#1976d2;color:#fff}
@@ -10368,6 +10481,9 @@ a{color:#64b5f6;text-decoration:none}
   .bo-sidebar--bento{grid-template-columns:1fr;max-height:none;flex:1}
   .bo-sidebar--bento .bo-sidebar__list,
   .bo-sidebar--bento .bo-transfer-panel{grid-column:1 / -1;max-height:none}
+  .bo-modal{padding:18px}
+  .bo-modal label{margin-top:8px}
+  .bo-sell-mode-toggle__btn{font-size:12px}
 }
 </style>
 </head>
@@ -10626,15 +10742,23 @@ a{color:#64b5f6;text-decoration:none}
 <div class="bo-modal-overlay" id="bo-sell-modal">
     <div class="bo-modal">
         <h2>Crear pedido</h2>
+        <div class="bo-sell-mode-toggle" id="bo-sell-mode-toggle">
+            <button type="button" class="bo-sell-mode-toggle__btn" data-mode="quick">⚡ Venta Rápida</button>
+            <button type="button" class="bo-sell-mode-toggle__btn" data-mode="full">Completo</button>
+        </div>
         <div class="bo-modal__seats" id="bo-sell-seats"></div>
         <div class="bo-modal__tickets" id="bo-sell-tickets"></div>
         <label for="bo-sell-nombre">Nombre *</label>
         <input type="text" id="bo-sell-nombre" required>
-        <label for="bo-sell-correo">Correo</label>
-        <input type="email" id="bo-sell-correo" autocomplete="off">
+        <div class="bo-field--optional">
+            <label for="bo-sell-correo">Correo</label>
+            <input type="email" id="bo-sell-correo" autocomplete="off">
+        </div>
         <div id="bo-loyalty-badge" style="margin-top:5px;font-size:12px;display:none;padding:5px 10px;border-radius:6px;"></div>
-        <label for="bo-sell-telefono">Teléfono</label>
-        <input type="tel" id="bo-sell-telefono">
+        <div class="bo-field--optional">
+            <label for="bo-sell-telefono">Teléfono</label>
+            <input type="tel" id="bo-sell-telefono">
+        </div>
         <label for="bo-sell-metodo">Método de pago</label>
         <select id="bo-sell-metodo">
             <option value="efectivo">Efectivo</option>
@@ -10642,35 +10766,40 @@ a{color:#64b5f6;text-decoration:none}
             <option value="transferencia">Transferencia</option>
             <option value="cortesia">Cortesía</option>
         </select>
-        <label for="bo-sell-qrmode">Modo de QR</label>
-        <select id="bo-sell-qrmode">
-            <option value="order">QR único por pedido</option>
-            <option value="individual">QR individual por entrada</option>
-        </select>
+        <div class="bo-field--optional">
+            <label for="bo-sell-qrmode">Modo de QR</label>
+            <select id="bo-sell-qrmode">
+                <option value="order">QR único por pedido</option>
+                <option value="individual">QR individual por entrada</option>
+            </select>
+        </div>
         <!-- Valor cobrado -->
         <div class="bo-valor-cobrado" id="bo-valor-cobrado" style="display:none">
             <label class="bo-valor__label" for="bo-valor-input">Valor cobrado</label>
             <div class="bo-valor__wrap">
                 <span class="bo-valor__prefix">$</span>
-                <input type="number" id="bo-valor-input" placeholder="0" min="0" step="1000">
+                <input type="text" inputmode="numeric" id="bo-valor-input" placeholder="0">
             </div>
             <small class="bo-valor__ref" id="bo-valor-ref"></small>
+            <small class="bo-valor__warning" id="bo-valor-warning" style="display:none"></small>
         </div>
         <!-- Nota -->
-        <div class="bo-valor-cobrado" style="margin-top:10px">
+        <div class="bo-valor-cobrado bo-field--optional" style="margin-top:10px">
             <label class="bo-valor__label" for="bo-sell-nota">Nota</label>
             <input type="text" id="bo-sell-nota" placeholder="Ej: pago en efectivo, cortesía prensa…" style="width:100%;padding:8px 10px;background:#16213e;border:1px solid #333;border-radius:8px;color:#fff;font-size:14px;outline:none;box-sizing:border-box">
         </div>
         <!-- Origen de la venta (opcional) -->
-        <label for="bo-sell-origen">Origen de la venta (opcional)</label>
-        <select id="bo-sell-origen">
-            <option value="">— Sin especificar —</option>
-            <option value="meta_ads">Meta Ads</option>
-            <option value="whatsapp">WhatsApp</option>
-            <option value="instagram">Instagram</option>
-            <option value="referido">Referido</option>
-            <option value="organico">Orgánico</option>
-        </select>
+        <div class="bo-field--optional">
+            <label for="bo-sell-origen">Origen de la venta (opcional)</label>
+            <select id="bo-sell-origen">
+                <option value="">— Sin especificar —</option>
+                <option value="meta_ads">Meta Ads</option>
+                <option value="whatsapp">WhatsApp</option>
+                <option value="instagram">Instagram</option>
+                <option value="referido">Referido</option>
+                <option value="organico">Orgánico</option>
+            </select>
+        </div>
 
         <div class="bo-modal__actions">
             <button class="bo-modal__cancel" id="bo-sell-cancel">Cancelar</button>
@@ -10701,9 +10830,31 @@ a{color:#64b5f6;text-decoration:none}
         <h2>VENTA COMPLETADA</h2>
         <div class="bo-success__detail" id="bo-success-detail"></div>
         <div class="bo-success__qr" id="bo-success-qr"></div>
+        <button class="bo-success__checkin" id="bo-success-checkin">✓ Marcar ingresado</button>
         <div class="bo-success__actions">
             <button class="bo-success__download" id="bo-success-download">Descargar QR</button>
             <button class="bo-success__close" id="bo-success-close">Cerrar</button>
+        </div>
+    </div>
+</div>
+
+<!-- Edit Sale Modal -->
+<div class="bo-modal-overlay" id="bo-edit-sale-modal">
+    <div class="bo-modal">
+        <h2>Editar valor de venta</h2>
+        <div class="bo-modal__seats" id="bo-edit-sale-info"></div>
+        <div class="bo-valor-cobrado">
+            <label class="bo-valor__label" for="bo-edit-valor-input">Valor cobrado</label>
+            <div class="bo-valor__wrap">
+                <span class="bo-valor__prefix">$</span>
+                <input type="text" inputmode="numeric" id="bo-edit-valor-input" placeholder="0">
+            </div>
+        </div>
+        <label for="bo-edit-nota-input">Nota</label>
+        <input type="text" id="bo-edit-nota-input" placeholder="Motivo del ajuste (opcional)">
+        <div class="bo-modal__actions">
+            <button class="bo-modal__cancel" id="bo-edit-sale-cancel">Cancelar</button>
+            <button class="bo-modal__confirm" id="bo-edit-sale-confirm">Guardar</button>
         </div>
     </div>
 </div>
