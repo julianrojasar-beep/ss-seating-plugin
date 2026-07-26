@@ -69,16 +69,21 @@ class SS_Difusion_Admin {
 
             <hr style="margin:20px 0">
             <h4 style="margin:0 0 12px">Links de difusión</h4>
-            <?php foreach ( SS_Difusion::get_channels() as $ch ) :
-                $url = SS_Difusion::build_utm_url( $event_id, $serie, $ch['source'], $ch['medium'] );
+            <?php foreach ( SS_Difusion::get_channels() as $channel_key => $ch ) :
+                $short_url = SS_Difusion::get_channel_short_url( $serie, $channel_key );
+                $long_url  = SS_Difusion::build_utm_url( $event_id, $serie, $ch['source'], $ch['medium'] );
+                $copy_url  = $short_url ?: $long_url;
             ?>
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
                 <button type="button" class="button ss-dif-copy"
-                        data-copy="<?php echo esc_attr( $url ); ?>"
+                        data-copy="<?php echo esc_attr( $copy_url ); ?>"
                         style="min-width:140px">
                     Copiar <?php echo esc_html( $ch['label'] ); ?>
                 </button>
-                <code style="font-size:11px;color:#6b7280;word-break:break-all"><?php echo esc_html( $url ); ?></code>
+                <code style="font-size:11px;color:#6b7280;word-break:break-all"><?php echo esc_html( $copy_url ); ?></code>
+                <?php if ( $short_url ) : ?>
+                <span style="font-size:11px;color:#9ca3af" title="Se redirige internamente conservando los UTM: <?php echo esc_attr( $long_url ); ?>">↳ link corto</span>
+                <?php endif; ?>
             </div>
             <?php endforeach; ?>
 

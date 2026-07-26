@@ -131,23 +131,36 @@ class SS_Settings {
 
         } elseif ( $action === 'save_difusion' ) {
             $redirect_tab = 'difusion';
-            $series    = array();
-            $names     = array_map( 'sanitize_text_field',    array_map( 'wp_unslash', (array) ( $_POST['serie_name']     ?? array() ) ) );
-            $slugs     = array_map( 'sanitize_title',          array_map( 'wp_unslash', (array) ( $_POST['serie_slug']     ?? array() ) ) );
-            $prefixes  = array_map( 'sanitize_title',          array_map( 'wp_unslash', (array) ( $_POST['serie_prefix']   ?? array() ) ) );
-            $templates = array_map( 'sanitize_textarea_field', array_map( 'wp_unslash', (array) ( $_POST['serie_template'] ?? array() ) ) );
-            $ids       = array_map( 'sanitize_key',            array_map( 'wp_unslash', (array) ( $_POST['serie_id']       ?? array() ) ) );
+            $series      = array();
+            $names       = array_map( 'sanitize_text_field',    array_map( 'wp_unslash', (array) ( $_POST['serie_name']     ?? array() ) ) );
+            $slugs       = array_map( 'sanitize_title',          array_map( 'wp_unslash', (array) ( $_POST['serie_slug']     ?? array() ) ) );
+            $prefixes    = array_map( 'sanitize_title',          array_map( 'wp_unslash', (array) ( $_POST['serie_prefix']   ?? array() ) ) );
+            $templates   = array_map( 'sanitize_textarea_field', array_map( 'wp_unslash', (array) ( $_POST['serie_template'] ?? array() ) ) );
+            $ids         = array_map( 'sanitize_key',            array_map( 'wp_unslash', (array) ( $_POST['serie_id']       ?? array() ) ) );
+
+            $short_inputs = array();
+            foreach ( SS_Difusion::get_channels() as $channel_key => $ch ) {
+                $short_inputs[ $channel_key ] = array_map( 'sanitize_title', array_map( 'wp_unslash', (array) ( $_POST[ 'serie_short_' . $channel_key ] ?? array() ) ) );
+            }
+
             foreach ( $names as $i => $name ) {
                 if ( empty( $name ) ) { continue; }
                 $id       = ! empty( $ids[ $i ] ) ? $ids[ $i ] : sanitize_title( $name ) . '_' . ( time() + $i );
                 $slug     = ! empty( $slugs[ $i ] ) ? $slugs[ $i ] : sanitize_title( $name );
                 $prefix   = ! empty( $prefixes[ $i ] ) ? $prefixes[ $i ] : $slug;
+
+                $short_slugs = array();
+                foreach ( $short_inputs as $channel_key => $values ) {
+                    $short_slugs[ $channel_key ] = $values[ $i ] ?? '';
+                }
+
                 $series[] = array(
                     'id'              => $id,
                     'name'            => $name,
                     'slug'            => $slug,
                     'campaign_prefix' => $prefix,
                     'wa_template'     => $templates[ $i ] ?? '',
+                    'short_slugs'     => array_filter( $short_slugs ),
                 );
             }
             SS_Difusion::save_series( $series );
@@ -678,6 +691,26 @@ class SS_Settings {
                         </td>
                     </tr>
                     <tr>
+                        <th style="padding:6px 10px 6px 0;vertical-align:top;padding-top:12px">Links cortos por canal</th>
+                        <td>
+                            <p class="description" style="margin-top:0 0 8px">
+                                Opcional. Redirige siempre al evento activo con el UTM correcto, sin tener que cambiar el link cada mes.
+                            </p>
+                            <?php $short_slugs = ( isset( $s['short_slugs'] ) && is_array( $s['short_slugs'] ) ) ? $s['short_slugs'] : array(); ?>
+                            <table style="border-collapse:collapse">
+                                <?php foreach ( SS_Difusion::get_channels() as $channel_key => $ch ) : ?>
+                                <tr>
+                                    <td style="padding:2px 6px 2px 0;font-size:12px;color:#555"><?php echo esc_html( $ch['label'] ); ?></td>
+                                    <td style="padding:2px 0">
+                                        <input type="text" name="serie_short_<?php echo esc_attr( $channel_key ); ?>[]" value="<?php echo esc_attr( $short_slugs[ $channel_key ] ?? '' ); ?>" class="small-text" placeholder="<?php echo esc_attr( $channel_key ); ?>">
+                                        <code style="font-size:11px;color:#6b7280"><?php echo esc_html( home_url( '/' ) ); ?><span class="ss-short-preview" data-field="<?php echo esc_attr( $channel_key ); ?>"><?php echo esc_html( $short_slugs[ $channel_key ] ?? '[slug]' ); ?></span>/</code>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </table>
+                        </td>
+                    </tr>
+                    <tr>
                         <th style="padding:6px 10px 6px 0;vertical-align:top;padding-top:12px">Plantilla WhatsApp</th>
                         <td>
                             <textarea name="serie_template[]" rows="10" style="width:100%;max-width:560px;font-family:monospace;font-size:12px"
@@ -698,7 +731,19 @@ class SS_Settings {
 
         <script>
         (function(){
-            var origin = window.location.origin;
+            var origin   = window.location.origin;
+            var channels = <?php echo wp_json_encode( SS_Difusion::get_channels() ); ?>;
+
+            function buildChannelRows() {
+                var rows = '';
+                Object.keys(channels).forEach(function (key) {
+                    rows += '<tr><td style="padding:2px 6px 2px 0;font-size:12px;color:#555">' + channels[key].label + '</td>'
+                        + '<td style="padding:2px 0"><input type="text" name="serie_short_' + key + '[]" value="" class="small-text" placeholder="' + key + '"> '
+                        + '<code style="font-size:11px;color:#6b7280">' + origin + '/<span class="ss-short-preview" data-field="' + key + '">[slug]</span>/</code></td></tr>';
+                });
+                return rows;
+            }
+
             document.getElementById('ss-add-serie').addEventListener('click', function(){
                 var container = document.getElementById('ss-series-container');
                 var div = document.createElement('div');
@@ -714,6 +759,10 @@ class SS_Settings {
                     + '<tr><th style="padding:6px 10px 6px 0;width:160px">Nombre</th><td><input type="text" name="serie_name[]" value="" class="regular-text" required></td></tr>'
                     + '<tr><th style="padding:6px 10px 6px 0">Slug (URL)</th><td><input type="text" name="serie_slug[]" value="" class="regular-text" placeholder="jueves-de-magia"><p class="description">Link inteligente: <code>' + origin + '/[slug]/</code></p></td></tr>'
                     + '<tr><th style="padding:6px 10px 6px 0">Prefijo UTM</th><td><input type="text" name="serie_prefix[]" value="" class="regular-text" placeholder="jdm"><p class="description">Ej: <code>jdm</code> genera campaña <code>jdm_2026_07</code></p></td></tr>'
+                    + '<tr><th style="padding:6px 10px 6px 0;vertical-align:top;padding-top:12px">Links cortos por canal</th><td>'
+                    + '<p class="description" style="margin:0 0 8px">Opcional. Redirige siempre al evento activo con el UTM correcto, sin tener que cambiar el link cada mes.</p>'
+                    + '<table style="border-collapse:collapse">' + buildChannelRows() + '</table>'
+                    + '</td></tr>'
                     + '<tr><th style="padding:6px 10px 6px 0;vertical-align:top;padding-top:12px">Plantilla WhatsApp</th><td><textarea name="serie_template[]" rows="10" style="width:100%;max-width:560px;font-family:monospace;font-size:12px" placeholder="Hola! El próximo show..."></textarea></td></tr>'
                     + '</table>';
                 container.appendChild(div);
@@ -724,6 +773,15 @@ class SS_Settings {
                         e.target.closest('.ss-serie-card').remove();
                     }
                 }
+            });
+            document.addEventListener('input', function(e){
+                var name = e.target.getAttribute('name');
+                if ( ! name || name.indexOf('serie_short_') !== 0 ) { return; }
+                var field = name.slice('serie_short_'.length, -2); // quita prefijo y "[]"
+                var card = e.target.closest('.ss-serie-card');
+                if ( ! card ) { return; }
+                var preview = card.querySelector('.ss-short-preview[data-field="' + field + '"]');
+                if ( preview ) { preview.textContent = e.target.value || '[slug]'; }
             });
         })();
         </script>

@@ -99,25 +99,68 @@ class SS_Difusion {
     // ── Rewrite Rules ────────────────────────────────────────────────────
 
     public static function register_rewrite_rules(): void {
+        $channels = self::get_channels();
         foreach ( self::get_series() as $serie ) {
-            if ( empty( $serie['slug'] ) ) { continue; }
-            $slug = sanitize_title( $serie['slug'] );
-            add_rewrite_rule(
-                '^' . preg_quote( $slug, '#' ) . '/?$',
-                'index.php?ss_smart_link=' . urlencode( $serie['id'] ),
-                'top'
-            );
+            if ( ! empty( $serie['slug'] ) ) {
+                $slug = sanitize_title( $serie['slug'] );
+                add_rewrite_rule(
+                    '^' . preg_quote( $slug, '#' ) . '/?$',
+                    'index.php?ss_smart_link=' . urlencode( $serie['id'] ),
+                    'top'
+                );
+            }
+
+            $short_slugs = ( isset( $serie['short_slugs'] ) && is_array( $serie['short_slugs'] ) ) ? $serie['short_slugs'] : array();
+            foreach ( $channels as $channel_key => $ch ) {
+                if ( empty( $short_slugs[ $channel_key ] ) ) { continue; }
+                $short = sanitize_title( $short_slugs[ $channel_key ] );
+                if ( ! $short ) { continue; }
+                add_rewrite_rule(
+                    '^' . preg_quote( $short, '#' ) . '/?$',
+                    'index.php?ss_smart_link_channel=' . urlencode( $serie['id'] . ':' . $channel_key ),
+                    'top'
+                );
+            }
         }
     }
 
     public static function add_query_vars( array $vars ): array {
         $vars[] = 'ss_smart_link';
+        $vars[] = 'ss_smart_link_channel';
         return $vars;
     }
 
     public static function handle_smart_link(): void {
+        $channel_param = get_query_var( 'ss_smart_link_channel' );
+        if ( $channel_param ) {
+            $parts      = explode( ':', (string) $channel_param, 2 );
+            $serie_id   = $parts[0] ?? '';
+            $channel    = $parts[1] ?? '';
+            $serie      = $serie_id ? self::get_serie( $serie_id ) : null;
+            $channels   = self::get_channels();
+
+            nocache_headers();
+
+            if ( ! $serie || ! isset( $channels[ $channel ] ) ) {
+                wp_redirect( home_url( '/' ) );
+                exit;
+            }
+
+            $event_id = self::get_active_event_id( $serie_id );
+            if ( ! $event_id ) {
+                wp_redirect( home_url( '/' ) );
+                exit;
+            }
+
+            $ch = $channels[ $channel ];
+            wp_redirect( self::build_utm_url( $event_id, $serie, $ch['source'], $ch['medium'] ), 302 );
+            exit;
+        }
+
         $serie_id = get_query_var( 'ss_smart_link' );
         if ( ! $serie_id ) { return; }
+
+        nocache_headers();
 
         $event_id = self::get_active_event_id( $serie_id );
         if ( ! $event_id ) {
@@ -163,7 +206,19 @@ class SS_Difusion {
             'whatsapp'      => array( 'label' => 'WhatsApp',      'source' => 'whatsapp',  'medium' => 'chat' ),
             'instagram_bio' => array( 'label' => 'Instagram Bio', 'source' => 'instagram', 'medium' => 'bio' ),
             'qr'            => array( 'label' => 'QR / Poster',   'source' => 'qr',        'medium' => 'poster' ),
+            'meta'          => array( 'label' => 'Meta Ads',      'source' => 'meta',      'medium' => 'paid_social' ),
         );
+    }
+
+    /**
+     * URL corta permanente para un canal (ej. /wa/), si la serie tiene un slug
+     * corto configurado para ese canal. Vacío si no está configurado.
+     */
+    public static function get_channel_short_url( array $serie, string $channel ): string {
+        $short_slugs = ( isset( $serie['short_slugs'] ) && is_array( $serie['short_slugs'] ) ) ? $serie['short_slugs'] : array();
+        $slug        = $short_slugs[ $channel ] ?? '';
+        if ( ! $slug ) { return ''; }
+        return home_url( '/' . sanitize_title( $slug ) . '/' );
     }
 
     // ── Template Variables ────────────────────────────────────────────────
@@ -198,13 +253,15 @@ class SS_Difusion {
             $precio = '$' . number_format( (float) min( $prices ), 0, ',', '.' );
         }
 
+        $wa_short_link = self::get_channel_short_url( $serie, 'whatsapp' );
+
         return array(
             'fecha_larga' => $fecha_larga,
             'artistas'    => $artists ?: '',
             'precio'      => $precio,
             'hora'        => $hora,
             'teatro'      => $venue ?: '',
-            'link'        => self::get_smart_link( $serie ),
+            'link'        => $wa_short_link ?: self::get_smart_link( $serie ),
         );
     }
 
