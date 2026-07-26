@@ -192,7 +192,9 @@ class SS_Difusion {
     }
 
     public static function build_utm_url( int $event_id, array $serie, string $source, string $medium ): string {
-        $base     = self::get_smart_link( $serie );
+        // Va directo al permalink real del evento (no a /{slug}/) para evitar un segundo
+        // salto por el smart link plano, que no reenvía query string y perdería los UTM.
+        $base     = get_permalink( $event_id );
         $campaign = self::build_campaign( $event_id, $serie );
         return add_query_arg( array(
             'utm_source'   => $source,
@@ -211,14 +213,14 @@ class SS_Difusion {
     }
 
     /**
-     * URL corta permanente para un canal (ej. /wa/), si la serie tiene un slug
+     * URL corta permanente para un canal (ej. /wa), si la serie tiene un slug
      * corto configurado para ese canal. Vacío si no está configurado.
      */
     public static function get_channel_short_url( array $serie, string $channel ): string {
         $short_slugs = ( isset( $serie['short_slugs'] ) && is_array( $serie['short_slugs'] ) ) ? $serie['short_slugs'] : array();
         $slug        = $short_slugs[ $channel ] ?? '';
         if ( ! $slug ) { return ''; }
-        return home_url( '/' . sanitize_title( $slug ) . '/' );
+        return home_url( '/' . sanitize_title( $slug ) );
     }
 
     // ── Template Variables ────────────────────────────────────────────────

@@ -703,7 +703,7 @@ class SS_Settings {
                                     <td style="padding:2px 6px 2px 0;font-size:12px;color:#555"><?php echo esc_html( $ch['label'] ); ?></td>
                                     <td style="padding:2px 0">
                                         <input type="text" name="serie_short_<?php echo esc_attr( $channel_key ); ?>[]" value="<?php echo esc_attr( $short_slugs[ $channel_key ] ?? '' ); ?>" class="small-text" placeholder="<?php echo esc_attr( $channel_key ); ?>">
-                                        <code style="font-size:11px;color:#6b7280"><?php echo esc_html( home_url( '/' ) ); ?><span class="ss-short-preview" data-field="<?php echo esc_attr( $channel_key ); ?>"><?php echo esc_html( $short_slugs[ $channel_key ] ?? '[slug]' ); ?></span>/</code>
+                                        <code style="font-size:11px;color:#6b7280"><?php echo esc_html( home_url( '/' ) ); ?><span class="ss-short-preview" data-field="<?php echo esc_attr( $channel_key ); ?>"><?php echo esc_html( $short_slugs[ $channel_key ] ?? '[slug]' ); ?></span></code>
                                     </td>
                                 </tr>
                                 <?php endforeach; ?>
@@ -739,7 +739,7 @@ class SS_Settings {
                 Object.keys(channels).forEach(function (key) {
                     rows += '<tr><td style="padding:2px 6px 2px 0;font-size:12px;color:#555">' + channels[key].label + '</td>'
                         + '<td style="padding:2px 0"><input type="text" name="serie_short_' + key + '[]" value="" class="small-text" placeholder="' + key + '"> '
-                        + '<code style="font-size:11px;color:#6b7280">' + origin + '/<span class="ss-short-preview" data-field="' + key + '">[slug]</span>/</code></td></tr>';
+                        + '<code style="font-size:11px;color:#6b7280">' + origin + '/<span class="ss-short-preview" data-field="' + key + '">[slug]</span></code></td></tr>';
                 });
                 return rows;
             }
