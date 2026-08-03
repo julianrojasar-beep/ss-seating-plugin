@@ -3,7 +3,7 @@
  * Plugin Name: SS Seating
  * Plugin URI: https://tusitio.com
  * Description: Sistema de selección de sillas y venta de boletas con QR para eventos.
- * Version: 1.3.21
+ * Version: 1.3.22
  * Author: Julian Rojas
  * Author URI: https://tusitio.com
  * License: GPL v2 or later
@@ -15,16 +15,6 @@
 // Si no está definido, lee la opción guardada en la DB desde SS Seating → Configuración → Módulos.
 if ( ! defined( 'SS_FIDELIZACION_ENABLED' ) ) {
     define( 'SS_FIDELIZACION_ENABLED', get_option( 'ss_fidelizacion_enabled', '0' ) === '1' );
-}
-
-// Meta Conversions API — mismo patrón: wp-config.php puede forzar el valor; si no,
-// se lee lo guardado desde SS Seating → Configuración → Módulos (tab oculto ?tab=modulos&key=ssdev).
-// Nunca hardcodear el Pixel ID/token acá — este archivo va al repo público de GitHub.
-if ( ! defined( 'SS_META_CAPI_PIXEL_ID' ) ) {
-    define( 'SS_META_CAPI_PIXEL_ID', get_option( 'ss_meta_capi_pixel_id', '' ) );
-}
-if ( ! defined( 'SS_META_CAPI_TOKEN' ) ) {
-    define( 'SS_META_CAPI_TOKEN', get_option( 'ss_meta_capi_token', '' ) );
 }
 
 // ── Auto-updater via GitHub Releases ──────────────────────────────────────────
@@ -76,9 +66,6 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/difusion/class-ss-difusion-
 // ── API REST: reportes para el dashboard externo ─────────────────────────────
 require_once plugin_dir_path( __FILE__ ) . 'includes/api/class-ss-rest-reports.php';
 
-// ── Meta Conversions API: envío server-side de Purchase ──────────────────────
-require_once plugin_dir_path( __FILE__ ) . 'includes/api/class-ss-meta-capi.php';
-
 // Descuentos de grupo y pareja son independientes del módulo de fidelización.
 require_once plugin_dir_path( __FILE__ ) . 'includes/loyalty/class-ss-group-discount.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/loyalty/class-ss-couple-discount.php';
@@ -92,10 +79,22 @@ SS_Event_Admin::init();
 SS_Ticket_Form::init();
 SS_Difusion::init();
 SS_REST_Reports::init();
-SS_Meta_CAPI::init();
 if ( SS_FIDELIZACION_ENABLED ) {
     SS_Loyalty::init();
 }
+
+// Limpieza: el módulo Meta Conversions API (Pixel ID/Token guardados desde la
+// pestaña oculta de Módulos) se retiró por ser redundante con PixelYourSite, que
+// ya cubre Pixel + CAPI + deduplicación en el sitio. Borra lo que haya quedado
+// guardado en la DB de una versión anterior del plugin.
+add_action( 'admin_init', function () {
+    if ( get_option( 'ss_meta_capi_pixel_id', false ) !== false ) {
+        delete_option( 'ss_meta_capi_pixel_id' );
+    }
+    if ( get_option( 'ss_meta_capi_token', false ) !== false ) {
+        delete_option( 'ss_meta_capi_token' );
+    }
+} );
 
 // ── Menú admin: Fidelización ─────────────────────────────────────────────────
 if ( SS_FIDELIZACION_ENABLED ) {
@@ -2187,16 +2186,6 @@ function ss_seating_save_utm_to_order( $order, $data ): void {
         if ( ! empty( $utm['fbclid'] ) ) {
             $order->update_meta_data( '_ss_fbclid', $utm['fbclid'] );
         }
-    }
-
-    // _fbc/_fbp: cookies propias del Meta Pixel (si hay uno instalado en el sitio vía
-    // GTM/tema/otro plugin — este plugin no lo instala). Se guardan tal cual porque son
-    // justo el formato que espera el campo user_data.fbc/fbp de Conversions API.
-    if ( ! empty( $_COOKIE['_fbc'] ) ) {
-        $order->update_meta_data( '_ss_fbc', sanitize_text_field( wp_unslash( $_COOKIE['_fbc'] ) ) );
-    }
-    if ( ! empty( $_COOKIE['_fbp'] ) ) {
-        $order->update_meta_data( '_ss_fbp', sanitize_text_field( wp_unslash( $_COOKIE['_fbp'] ) ) );
     }
 }
 
