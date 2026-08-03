@@ -286,17 +286,24 @@ class SS_REST_Reports {
                 $ingresos_web += $valor;
             }
 
+            $cliente = trim( $order->get_billing_first_name() . ' ' . $order->get_billing_last_name() );
+            if ( '' === $cliente ) {
+                $cliente = $order->get_billing_email();
+            }
+
             $transacciones[] = array(
-                'order_id'     => $order_id,
-                'canal'        => $is_bo ? 'bo' : 'web',
-                'origen'       => $origen,
-                'utm_medium'   => $utm_medium,
-                'utm_campaign' => $utm_campaign,
-                'fbclid'       => $fbclid,
-                'boletas'      => $boletas_orden,
-                'zonas'        => array_values( array_unique( array_filter( $zonas_orden ) ) ),
-                'valor'        => $valor,
-                'fecha'        => $order->get_date_created() ? $order->get_date_created()->format( 'c' ) : '',
+                'order_id'      => $order_id,
+                'canal'         => $is_bo ? 'bo' : 'web',
+                'cliente'       => $cliente,
+                'medio_pago'    => $order->get_payment_method_title(),
+                'origen'        => $origen,
+                'utm_medium'    => $utm_medium,
+                'utm_campaign'  => $utm_campaign,
+                'fbclid'        => $fbclid,
+                'boletas'       => $boletas_orden,
+                'zonas'         => array_values( array_unique( array_filter( $zonas_orden ) ) ),
+                'valor'         => $valor,
+                'fecha'         => $order->get_date_created() ? $order->get_date_created()->format( 'c' ) : '',
             );
         }
 
