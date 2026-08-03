@@ -220,19 +220,27 @@ class SS_REST_Reports {
 
             if ( $is_bo ) {
                 $origen = (string) $order->get_meta( '_ss_bo_sale_origin' );
+                $fbclid = '';
+                $utm_medium = '';
             } else {
                 $origen = (string) $order->get_meta( '_ss_utm_source' );
+                $fbclid = (string) $order->get_meta( '_ss_fbclid' );
+                $utm_medium = (string) $order->get_meta( '_ss_utm_medium' );
             }
             $utm_campaign = $is_bo ? '' : (string) $order->get_meta( '_ss_utm_campaign' );
 
             $zonas_orden = array();
+            $boletas_orden = 0;
             foreach ( $order->get_items() as $item ) {
                 $ticket_qtys = $item->get_meta( 'ss_ticket_qtys' );
                 if ( is_array( $ticket_qtys ) ) {
                     foreach ( $ticket_qtys as $z => $qty ) {
                         $vendidas_por_zona[ $z ] = ( $vendidas_por_zona[ $z ] ?? 0 ) + (int) $qty;
                         $zonas_orden[] = $z;
+                        $boletas_orden += (int) $qty;
                     }
+                } else {
+                    $boletas_orden += (int) $item->get_quantity();
                 }
                 $zona_item = $item->get_meta( 'ss_zone' );
                 if ( $zona_item ) {
@@ -265,7 +273,10 @@ class SS_REST_Reports {
                 'order_id'     => $order_id,
                 'canal'        => $is_bo ? 'bo' : 'web',
                 'origen'       => $origen,
+                'utm_medium'   => $utm_medium,
                 'utm_campaign' => $utm_campaign,
+                'fbclid'       => $fbclid,
+                'boletas'      => $boletas_orden,
                 'zonas'        => array_values( array_unique( array_filter( $zonas_orden ) ) ),
                 'valor'        => $valor,
                 'fecha'        => $order->get_date_created() ? $order->get_date_created()->format( 'c' ) : '',

@@ -3,7 +3,7 @@
  * Plugin Name: SS Seating
  * Plugin URI: https://tusitio.com
  * Description: Sistema de selección de sillas y venta de boletas con QR para eventos.
- * Version: 1.3.20
+ * Version: 1.3.21
  * Author: Julian Rojas
  * Author URI: https://tusitio.com
  * License: GPL v2 or later
@@ -15,6 +15,16 @@
 // Si no está definido, lee la opción guardada en la DB desde SS Seating → Configuración → Módulos.
 if ( ! defined( 'SS_FIDELIZACION_ENABLED' ) ) {
     define( 'SS_FIDELIZACION_ENABLED', get_option( 'ss_fidelizacion_enabled', '0' ) === '1' );
+}
+
+// Meta Conversions API — mismo patrón: wp-config.php puede forzar el valor; si no,
+// se lee lo guardado desde SS Seating → Configuración → Módulos (tab oculto ?tab=modulos&key=ssdev).
+// Nunca hardcodear el Pixel ID/token acá — este archivo va al repo público de GitHub.
+if ( ! defined( 'SS_META_CAPI_PIXEL_ID' ) ) {
+    define( 'SS_META_CAPI_PIXEL_ID', get_option( 'ss_meta_capi_pixel_id', '' ) );
+}
+if ( ! defined( 'SS_META_CAPI_TOKEN' ) ) {
+    define( 'SS_META_CAPI_TOKEN', get_option( 'ss_meta_capi_token', '' ) );
 }
 
 // ── Auto-updater via GitHub Releases ──────────────────────────────────────────
@@ -66,6 +76,9 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/difusion/class-ss-difusion-
 // ── API REST: reportes para el dashboard externo ─────────────────────────────
 require_once plugin_dir_path( __FILE__ ) . 'includes/api/class-ss-rest-reports.php';
 
+// ── Meta Conversions API: envío server-side de Purchase ──────────────────────
+require_once plugin_dir_path( __FILE__ ) . 'includes/api/class-ss-meta-capi.php';
+
 // Descuentos de grupo y pareja son independientes del módulo de fidelización.
 require_once plugin_dir_path( __FILE__ ) . 'includes/loyalty/class-ss-group-discount.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/loyalty/class-ss-couple-discount.php';
@@ -79,6 +92,7 @@ SS_Event_Admin::init();
 SS_Ticket_Form::init();
 SS_Difusion::init();
 SS_REST_Reports::init();
+SS_Meta_CAPI::init();
 if ( SS_FIDELIZACION_ENABLED ) {
     SS_Loyalty::init();
 }
@@ -2122,21 +2136,36 @@ function ss_checkout_loyalty_notice_js(): void {
 // directamente en el pedido desde $_POST en woocommerce_checkout_create_order.
 // ss_seats_get_from_order() lee AMBAS fuentes: item meta y order meta.
 
-// ── Captura de UTM de llegada (Centro de Difusión genera utm_source/utm_campaign
-// al compartir el smart link). Se guarda en WC session al aterrizar en la landing
-// y se persiste en el pedido en woocommerce_checkout_create_order, igual que ss_seats.
+// ── Captura de UTM/fbclid de llegada ─────────────────────────────────────────
+// Antes solo capturaba si venía utm_source (o sea, solo tráfico que pasaba por el
+// smart link del Centro de Difusión). Un clic directo a un anuncio de Meta que no
+// use el smart link llega con ?fbclid=... pero sin utm_source, y antes ese tráfico
+// se perdía por completo (0/5 transacciones Web con "origen" en JDM-2026-07, ver
+// Mejoras_Plugin_Pendientes.md del repo del dashboard). Ahora se dispara con
+// CUALQUIERA de los dos presentes, y si hay fbclid sin utm_source explícito se
+// asume "facebook" como fuente (más preciso que dejarlo vacío).
+// Se guarda en WC session al aterrizar en la landing y se persiste en el pedido en
+// woocommerce_checkout_create_order, igual que ss_seats.
 add_action( 'wp', 'ss_seating_capture_utm_session' );
 
 function ss_seating_capture_utm_session(): void {
-    if ( is_admin() || empty( $_GET['utm_source'] ) ) {
+    if ( is_admin() ) {
+        return;
+    }
+    $has_utm    = ! empty( $_GET['utm_source'] );
+    $has_fbclid = ! empty( $_GET['fbclid'] );
+    if ( ! $has_utm && ! $has_fbclid ) {
         return;
     }
     if ( ! function_exists( 'WC' ) || ! WC()->session ) {
         return;
     }
+    $utm_source = $has_utm ? sanitize_text_field( wp_unslash( $_GET['utm_source'] ) ) : ( $has_fbclid ? 'facebook' : '' );
     WC()->session->set( 'ss_pending_utm', array(
-        'utm_source'   => sanitize_text_field( wp_unslash( $_GET['utm_source'] ) ),
+        'utm_source'   => $utm_source,
+        'utm_medium'   => isset( $_GET['utm_medium'] ) ? sanitize_text_field( wp_unslash( $_GET['utm_medium'] ) ) : '',
         'utm_campaign' => isset( $_GET['utm_campaign'] ) ? sanitize_text_field( wp_unslash( $_GET['utm_campaign'] ) ) : '',
+        'fbclid'       => $has_fbclid ? sanitize_text_field( wp_unslash( $_GET['fbclid'] ) ) : '',
     ) );
 }
 
@@ -2147,12 +2176,27 @@ function ss_seating_save_utm_to_order( $order, $data ): void {
         return;
     }
     $utm = WC()->session->get( 'ss_pending_utm' );
-    if ( empty( $utm ) || empty( $utm['utm_source'] ) ) {
-        return;
+    if ( ! empty( $utm ) && ! empty( $utm['utm_source'] ) ) {
+        $order->update_meta_data( '_ss_utm_source', $utm['utm_source'] );
+        if ( ! empty( $utm['utm_medium'] ) ) {
+            $order->update_meta_data( '_ss_utm_medium', $utm['utm_medium'] );
+        }
+        if ( ! empty( $utm['utm_campaign'] ) ) {
+            $order->update_meta_data( '_ss_utm_campaign', $utm['utm_campaign'] );
+        }
+        if ( ! empty( $utm['fbclid'] ) ) {
+            $order->update_meta_data( '_ss_fbclid', $utm['fbclid'] );
+        }
     }
-    $order->update_meta_data( '_ss_utm_source', $utm['utm_source'] );
-    if ( ! empty( $utm['utm_campaign'] ) ) {
-        $order->update_meta_data( '_ss_utm_campaign', $utm['utm_campaign'] );
+
+    // _fbc/_fbp: cookies propias del Meta Pixel (si hay uno instalado en el sitio vía
+    // GTM/tema/otro plugin — este plugin no lo instala). Se guardan tal cual porque son
+    // justo el formato que espera el campo user_data.fbc/fbp de Conversions API.
+    if ( ! empty( $_COOKIE['_fbc'] ) ) {
+        $order->update_meta_data( '_ss_fbc', sanitize_text_field( wp_unslash( $_COOKIE['_fbc'] ) ) );
+    }
+    if ( ! empty( $_COOKIE['_fbp'] ) ) {
+        $order->update_meta_data( '_ss_fbp', sanitize_text_field( wp_unslash( $_COOKIE['_fbp'] ) ) );
     }
 }
 

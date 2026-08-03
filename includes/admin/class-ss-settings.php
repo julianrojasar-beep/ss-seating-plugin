@@ -128,6 +128,15 @@ class SS_Settings {
         } elseif ( $action === 'save_modulos' ) {
             $redirect_tab = 'modulos';
             update_option( 'ss_fidelizacion_enabled', ! empty( $_POST['ss_fidelizacion_enabled'] ) ? '1' : '0' );
+            // Meta Conversions API: solo se guardan si NO están ya forzadas por constante en
+            // wp-config.php (mismo criterio que SS_FIDELIZACION_ENABLED) — si están definidas
+            // ahí, este campo se muestra deshabilitado en el formulario y no hay nada que leer.
+            if ( ! defined( 'SS_META_CAPI_PIXEL_ID' ) || ! SS_META_CAPI_PIXEL_ID ) {
+                update_option( 'ss_meta_capi_pixel_id', sanitize_text_field( wp_unslash( $_POST['ss_meta_capi_pixel_id'] ?? '' ) ) );
+            }
+            if ( ! defined( 'SS_META_CAPI_TOKEN' ) || ! SS_META_CAPI_TOKEN ) {
+                update_option( 'ss_meta_capi_token', sanitize_text_field( wp_unslash( $_POST['ss_meta_capi_token'] ?? '' ) ) );
+            }
 
         } elseif ( $action === 'save_difusion' ) {
             $redirect_tab = 'difusion';
@@ -790,6 +799,13 @@ class SS_Settings {
 
     private function render_tab_modulos( string $nonce ): void {
         $fidelizacion = get_option( 'ss_fidelizacion_enabled', '0' ) === '1';
+
+        // Si vienen forzadas por wp-config.php, el campo se muestra de solo lectura (no se
+        // pisa lo que dice el código con lo que haya quedado guardado en la DB).
+        $pixel_forzado = defined( 'SS_META_CAPI_PIXEL_ID' ) && SS_META_CAPI_PIXEL_ID;
+        $token_forzado = defined( 'SS_META_CAPI_TOKEN' ) && SS_META_CAPI_TOKEN;
+        $pixel_id      = $pixel_forzado ? SS_META_CAPI_PIXEL_ID : get_option( 'ss_meta_capi_pixel_id', '' );
+        $token_guardado = $token_forzado ? SS_META_CAPI_TOKEN : get_option( 'ss_meta_capi_token', '' );
         ?>
         <form method="post" action="">
             <input type="hidden" name="_ss_cfg_nonce" value="<?php echo esc_attr( $nonce ); ?>">
@@ -811,6 +827,37 @@ class SS_Settings {
                         <p class="description">
                             Habilita el menú Fidelización, el seguimiento de asistencia por cliente y los descuentos automáticos por fidelidad.
                             Solo activar en sitios que usen este sistema.
+                        </p>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row">Meta Conversions API</th>
+                    <td>
+                        <p class="description" style="margin-top:0">
+                            Envío server-side del evento Purchase a Meta (deduplicado contra el Pixel de navegador vía event_id). Se guarda solo acá, en la base de datos de este sitio — nunca en el código del plugin ni en el repositorio público de GitHub.
+                        </p>
+                        <p>
+                            <label for="ss_meta_capi_pixel_id" style="display:inline-block;min-width:110px">Pixel ID</label>
+                            <input type="text" id="ss_meta_capi_pixel_id" name="ss_meta_capi_pixel_id"
+                                   value="<?php echo esc_attr( $pixel_id ); ?>" class="regular-text" autocomplete="off"
+                                   <?php disabled( $pixel_forzado ); ?>>
+                            <?php if ( $pixel_forzado ) : ?>
+                                <span class="description">(forzado por wp-config.php)</span>
+                            <?php endif; ?>
+                        </p>
+                        <p>
+                            <label for="ss_meta_capi_token" style="display:inline-block;min-width:110px">Access Token</label>
+                            <input type="password" id="ss_meta_capi_token" name="ss_meta_capi_token"
+                                   value="<?php echo esc_attr( $token_guardado ); ?>" class="regular-text" autocomplete="off"
+                                   <?php disabled( $token_forzado ); ?>>
+                            <?php if ( $token_forzado ) : ?>
+                                <span class="description">(forzado por wp-config.php)</span>
+                            <?php endif; ?>
+                        </p>
+                        <p class="description">
+                            Token de <strong>Conversions API</strong> del pixel (Events Manager → Configuración →
+                            Conversions API), no el token de la Graph API de Marketing que ya usa el dashboard externo.
+                            Dejar ambos campos vacíos desactiva el envío sin afectar nada más del plugin.
                         </p>
                     </td>
                 </tr>
