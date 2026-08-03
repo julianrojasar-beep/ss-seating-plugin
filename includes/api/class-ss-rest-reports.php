@@ -222,12 +222,29 @@ class SS_REST_Reports {
                 $origen = (string) $order->get_meta( '_ss_bo_sale_origin' );
                 $fbclid = '';
                 $utm_medium = '';
+                $utm_campaign = '';
             } else {
-                $origen = (string) $order->get_meta( '_ss_utm_source' );
+                // WooCommerce trae su propia "Atribución de pedido" desde WC 8.5+ (JS de
+                // sourcebuster.js, corre en cada visita, no depende de que este plugin
+                // llegue a ejecutarse a tiempo) — se prefiere sobre la captura propia de
+                // este plugin (_ss_utm_source, hook 'wp' del lado servidor) porque
+                // confirmado con pedidos reales: WC la capturó correctamente en casos
+                // donde la propia no llegó a tiempo (ver CLAUDE.md, "Atribución de Meta Ads").
+                // La propia queda como respaldo para cuando WC no tenga dato (JS bloqueado, etc.).
+                $origen = (string) $order->get_meta( '_wc_order_attribution_utm_source' );
+                if ( '' === $origen ) {
+                    $origen = (string) $order->get_meta( '_ss_utm_source' );
+                }
+                $utm_medium = (string) $order->get_meta( '_wc_order_attribution_utm_medium' );
+                if ( '' === $utm_medium ) {
+                    $utm_medium = (string) $order->get_meta( '_ss_utm_medium' );
+                }
+                $utm_campaign = (string) $order->get_meta( '_wc_order_attribution_utm_campaign' );
+                if ( '' === $utm_campaign ) {
+                    $utm_campaign = (string) $order->get_meta( '_ss_utm_campaign' );
+                }
                 $fbclid = (string) $order->get_meta( '_ss_fbclid' );
-                $utm_medium = (string) $order->get_meta( '_ss_utm_medium' );
             }
-            $utm_campaign = $is_bo ? '' : (string) $order->get_meta( '_ss_utm_campaign' );
 
             $zonas_orden = array();
             $boletas_orden = 0;
