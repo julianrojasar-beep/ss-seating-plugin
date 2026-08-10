@@ -20,25 +20,40 @@
   var QR_LEGACY     = /\/ss-checkin\/(\d+)\/([a-f0-9]{64})\/?$/i;
 
   // DOM refs
-  var feedbackEl, iconEl, msgEl, detailsEl, cameraStatus, historyBody, counterEl;
+  var feedbackEl, feedbackWrapEl, feedbackCloseEl, iconEl, msgEl, detailsEl, cameraStatus, historyBody, counterEl;
+  var dismissTimer     = null;
+  var AUTO_DISMISS_MS  = 10000;
 
   document.addEventListener('DOMContentLoaded', init);
 
   function init() {
     if (typeof Html5Qrcode === 'undefined' || !window.ssCheckinFrontend) return;
 
-    feedbackEl   = document.getElementById('ci-feedback');
-    iconEl       = document.getElementById('ci-icon');
-    msgEl        = document.getElementById('ci-msg');
-    detailsEl    = document.getElementById('ci-details');
-    cameraStatus = document.getElementById('ci-camera-status');
-    historyBody  = document.getElementById('ci-history-body');
-    counterEl    = document.getElementById('ci-count');
+    feedbackEl      = document.getElementById('ci-feedback');
+    feedbackWrapEl  = document.querySelector('.ci-feedback-wrap');
+    feedbackCloseEl = document.getElementById('ci-feedback-close');
+    iconEl          = document.getElementById('ci-icon');
+    msgEl           = document.getElementById('ci-msg');
+    detailsEl       = document.getElementById('ci-details');
+    cameraStatus    = document.getElementById('ci-camera-status');
+    historyBody     = document.getElementById('ci-history-body');
+    counterEl       = document.getElementById('ci-count');
 
     if (!feedbackEl) return;
 
+    if (feedbackCloseEl) {
+      feedbackCloseEl.addEventListener('click', dismissFeedback);
+    }
+
     startScanner();
     initStatsPolling();
+  }
+
+  // Oculta el cartel de resultado para liberar espacio de la cámara. Se
+  // dispara solo o con la ✕; el próximo escaneo lo vuelve a mostrar solo.
+  function dismissFeedback() {
+    if (feedbackWrapEl) feedbackWrapEl.classList.add('ci-dismissed');
+    if (dismissTimer) { clearTimeout(dismissTimer); dismissTimer = null; }
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -175,6 +190,11 @@
   function showFeedback(status, title, bodyHTML) {
     var icons = { valid: '\u2705', already: '\u26A0\uFE0F', invalid: '\u274C', loading: '\u23F3' };
 
+    // Cada resultado nuevo vuelve a mostrar el cartel (por si el anterior
+    // se hab\u00EDa cerrado solo o con la \u2715) y reinicia el temporizador.
+    if (feedbackWrapEl) feedbackWrapEl.classList.remove('ci-dismissed');
+    if (dismissTimer) { clearTimeout(dismissTimer); dismissTimer = null; }
+
     feedbackEl.className = 'ci-feedback ci-' + status;
     iconEl.textContent   = icons[status] || icons.invalid;
     msgEl.textContent    = title;
@@ -184,6 +204,13 @@
       detailsEl.style.display = 'block';
     } else {
       detailsEl.style.display = 'none';
+    }
+
+    // "loading" es transitorio (se reemplaza solo al llegar la respuesta del
+    // servidor) \u2014 el auto-cierre de 10s solo aplica a resultados finales,
+    // para no ocultar el cartel mientras todav\u00EDa se est\u00E1 validando.
+    if (status !== 'loading') {
+      dismissTimer = setTimeout(dismissFeedback, AUTO_DISMISS_MS);
     }
   }
 
@@ -198,6 +225,9 @@
       if (d.zone) html += '<tr><td>Zona:</td><td>' + esc(d.zone) + '</td></tr>';
       var seatsStr = Array.isArray(d.seats) ? d.seats.join(', ') : '—';
       html += '<tr><td>Sillas:</td><td><strong>' + esc(seatsStr) + '</strong></td></tr>';
+      if (d.renamed_note) {
+        html += '<tr><td colspan="2" style="color:#f59e0b;padding-top:6px;">⚠️ ' + esc(d.renamed_note) + '</td></tr>';
+      }
     } else {
       // General ticket
       html += '<tr><td>Tipo:</td><td><strong>Entrada General</strong></td></tr>';

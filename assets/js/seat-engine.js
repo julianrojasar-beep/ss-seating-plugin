@@ -124,8 +124,11 @@ function buildSeatsFromConfig(config) {
 }
 
 // ─── Remap computation ────────────────────────────────────────────
-// Returns a map {oldId: newId} for seats whose ID changes between
-// two row configurations (matched by physical position index).
+// Returns { map: {oldId: newId}, removed: [oldId, ...] } for seats whose
+// ID changes (or disappears) between two row configurations, matched by
+// physicalSlot — NOT by array index, since removing a seat from the middle
+// of a row shifts every subsequent array position without shifting the
+// physical slot each seat actually occupies.
 
 function computeRowRemap(oldRow, newRow, startX, spacing, zoneRects) {
   var oldSeats = generateRow(
@@ -138,14 +141,24 @@ function computeRowRemap(oldRow, newRow, startX, spacing, zoneRects) {
     newRow.zone, newRow.gaps || [], newRow.removedSeats || [], zoneRects,
     newRow.reverse  || false, newRow.renumber || false
   );
+
+  var newBySlot = {};
+  for (var n = 0; n < newSeats.length; n++) {
+    newBySlot[newSeats[n].physicalSlot] = newSeats[n];
+  }
+
   var map = {};
-  var len = Math.min(oldSeats.length, newSeats.length);
-  for (var i = 0; i < len; i++) {
-    if (oldSeats[i].id !== newSeats[i].id) {
-      map[oldSeats[i].id] = newSeats[i].id;
+  var removed = [];
+  for (var o = 0; o < oldSeats.length; o++) {
+    var oldSeat = oldSeats[o];
+    var newSeat = newBySlot[oldSeat.physicalSlot];
+    if (!newSeat) {
+      removed.push(oldSeat.id);
+    } else if (newSeat.id !== oldSeat.id) {
+      map[oldSeat.id] = newSeat.id;
     }
   }
-  return map;
+  return { map: map, removed: removed };
 }
 
 // ─── Public API ──────────────────────────────────────────────────

@@ -183,6 +183,46 @@ class SS_REST_Reports {
     }
 
     /**
+     * Resuelve el origen/atribución de un pedido, priorizando la "Atribución de
+     * pedido" nativa de WooCommerce (WC 8.5+, sourcebuster.js) sobre la captura
+     * propia del plugin (_ss_utm_source/medium/campaign), que queda como respaldo
+     * cuando WC no tiene el dato. Ver CLAUDE.md, "Atribución de Meta Ads".
+     * Reutilizado por el reporte REST y por el Cierre Contable.
+     *
+     * @return array { origen, utm_medium, utm_campaign, fbclid }
+     */
+    public static function get_order_attribution( \WC_Order $order, bool $is_bo ): array {
+        if ( $is_bo ) {
+            return array(
+                'origen'       => (string) $order->get_meta( '_ss_bo_sale_origin' ),
+                'utm_medium'   => '',
+                'utm_campaign' => '',
+                'fbclid'       => '',
+            );
+        }
+
+        $origen = (string) $order->get_meta( '_wc_order_attribution_utm_source' );
+        if ( '' === $origen ) {
+            $origen = (string) $order->get_meta( '_ss_utm_source' );
+        }
+        $utm_medium = (string) $order->get_meta( '_wc_order_attribution_utm_medium' );
+        if ( '' === $utm_medium ) {
+            $utm_medium = (string) $order->get_meta( '_ss_utm_medium' );
+        }
+        $utm_campaign = (string) $order->get_meta( '_wc_order_attribution_utm_campaign' );
+        if ( '' === $utm_campaign ) {
+            $utm_campaign = (string) $order->get_meta( '_ss_utm_campaign' );
+        }
+
+        return array(
+            'origen'       => $origen,
+            'utm_medium'   => $utm_medium,
+            'utm_campaign' => $utm_campaign,
+            'fbclid'       => (string) $order->get_meta( '_ss_fbclid' ),
+        );
+    }
+
+    /**
      * GET /reports/sales?event_id=
      * Ocupación, desglose Web/BO/canal, ingresos y timestamp por transacción de un evento.
      */
@@ -218,33 +258,11 @@ class SS_REST_Reports {
             $is_bo = $order->get_meta( '_ss_boxoffice_sale' ) === 'yes';
             $valor = $is_bo ? (int) $order->get_meta( '_ss_valor_cobrado' ) : (float) $order->get_total();
 
-            if ( $is_bo ) {
-                $origen = (string) $order->get_meta( '_ss_bo_sale_origin' );
-                $fbclid = '';
-                $utm_medium = '';
-                $utm_campaign = '';
-            } else {
-                // WooCommerce trae su propia "Atribución de pedido" desde WC 8.5+ (JS de
-                // sourcebuster.js, corre en cada visita, no depende de que este plugin
-                // llegue a ejecutarse a tiempo) — se prefiere sobre la captura propia de
-                // este plugin (_ss_utm_source, hook 'wp' del lado servidor) porque
-                // confirmado con pedidos reales: WC la capturó correctamente en casos
-                // donde la propia no llegó a tiempo (ver CLAUDE.md, "Atribución de Meta Ads").
-                // La propia queda como respaldo para cuando WC no tenga dato (JS bloqueado, etc.).
-                $origen = (string) $order->get_meta( '_wc_order_attribution_utm_source' );
-                if ( '' === $origen ) {
-                    $origen = (string) $order->get_meta( '_ss_utm_source' );
-                }
-                $utm_medium = (string) $order->get_meta( '_wc_order_attribution_utm_medium' );
-                if ( '' === $utm_medium ) {
-                    $utm_medium = (string) $order->get_meta( '_ss_utm_medium' );
-                }
-                $utm_campaign = (string) $order->get_meta( '_wc_order_attribution_utm_campaign' );
-                if ( '' === $utm_campaign ) {
-                    $utm_campaign = (string) $order->get_meta( '_ss_utm_campaign' );
-                }
-                $fbclid = (string) $order->get_meta( '_ss_fbclid' );
-            }
+            $attribution  = self::get_order_attribution( $order, $is_bo );
+            $origen       = $attribution['origen'];
+            $utm_medium   = $attribution['utm_medium'];
+            $utm_campaign = $attribution['utm_campaign'];
+            $fbclid       = $attribution['fbclid'];
 
             $zonas_orden = array();
             $boletas_orden = 0;

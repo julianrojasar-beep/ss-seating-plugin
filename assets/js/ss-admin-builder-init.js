@@ -118,173 +118,149 @@
     });
   }
 
-  // ─── 4) Remap button (only when event is locked) ─────────────
+  // ─── 4) Auto-compute remap on submit (only when event is locked) ──
+  // No separate "remap" button anymore: any normal save (Actualizar) that
+  // changes seat numbering now computes the {oldId:newId} diff itself and
+  // sends it along with the layout, so ss_seating_save_metabox() can
+  // re-key existing orders/ledger atomically in the same request. The
+  // server has the final say — it blocks the save if a removed seat still
+  // has a real sale/reservation attached (see ss-seating-plugin.php).
 
   if (!locked || !eventId) return;
 
-  // Inject the remap button after the export button
-  var exportArea = document.getElementById('exportVenue') || document.querySelector('[id="exportVenue"]');
-  var remapBtn = document.createElement('button');
-  remapBtn.type = 'button';
-  remapBtn.id   = 'ss-remap-btn';
-  remapBtn.textContent = 'Cambiar numeración (remap)';
-  remapBtn.style.cssText = 'margin-left:8px;background:#d97706;color:#fff;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;font-size:13px;';
-  remapBtn.title = 'Recalcula y actualiza los IDs de las sillas vendidas según la nueva configuración de numeración';
-
-  if (exportArea && exportArea.parentNode) {
-    exportArea.parentNode.insertBefore(remapBtn, exportArea.nextSibling);
+  function flattenRows(layout) {
+    if (!layout) return [];
+    if (Array.isArray(layout.floors)) {
+      var rows = [];
+      for (var f = 0; f < layout.floors.length; f++) {
+        rows = rows.concat((layout.floors[f] && layout.floors[f].rows) || []);
+      }
+      return rows;
+    }
+    return layout.rows || [];
   }
 
-  // Also inject info notice
-  var notice = document.createElement('p');
-  notice.style.cssText = 'color:#b45309;font-size:12px;margin:4px 0 0;';
-  notice.textContent = 'Este evento tiene ventas. Cambios de numeración (Rev./Renum.) requieren el botón "Cambiar numeración".';
-  if (remapBtn.parentNode) {
-    remapBtn.parentNode.insertBefore(notice, remapBtn.nextSibling);
+  // Los elementos nuevos van DESPUÉS de #ss-admin-builder-wrapper, no dentro:
+  // ese wrapper es un contenedor flex de 2 columnas (canvas + sidebar) y
+  // agregarle hijos de más ahí adentro (aunque sean <p>/<details>) rompe el
+  // layout y el canvas de Konva termina con ancho 0 (invisible).
+  var wrapperEl = document.getElementById('ss-admin-builder-wrapper') || hiddenInput.parentNode;
+  var anchorParent = wrapperEl.parentNode;
+  var anchorAfter  = wrapperEl;
+
+  function insertAfterAnchor(el) {
+    anchorParent.insertBefore(el, anchorAfter.nextSibling);
+    anchorAfter = el;
   }
 
-  remapBtn.addEventListener('click', function () {
-    if (!_savedLayout) {
-      alert('No se pudo cargar el layout original. Recargá la página.');
-      return;
-    }
+  var remapInput = document.createElement('input');
+  remapInput.type = 'hidden';
+  remapInput.name = 'ss_layout_remap';
+  remapInput.id   = 'ss_layout_remap_hidden';
+  insertAfterAnchor(remapInput);
 
-    var currentConfig = serializeLayout();
-    var zoneRects = currentConfig.zoneRects || [];
+  var removedInput = document.createElement('input');
+  removedInput.type = 'hidden';
+  removedInput.name = 'ss_layout_removed';
+  removedInput.id   = 'ss_layout_removed_hidden';
+  insertAfterAnchor(removedInput);
 
-    // Compute full remap across all rows
-    var fullRemap = {};
-    var oldRows = _savedLayout.rows || [];
-    var newRows = currentConfig.rows || [];
+  var lockedNotice = document.createElement('p');
+  lockedNotice.style.cssText = 'color:#6b7280;font-size:12px;margin:8px 0 0;';
+  lockedNotice.textContent = 'Este evento tiene ventas — al guardar, las sillas cuyo número cambie se re-etiquetan automáticamente en pedidos, ledger y reservas existentes.';
+  insertAfterAnchor(lockedNotice);
 
-    // Match rows by label (skip floor-label / empty rows)
-    var oldByLabel = {};
-    for (var i = 0; i < oldRows.length; i++) {
-      if (oldRows[i].label) oldByLabel[oldRows[i].label] = oldRows[i];
-    }
+  if (postForm) {
+    postForm.addEventListener('submit', function () {
+      if (!_savedLayout) return; // nada guardado aún contra qué comparar
 
-    for (var j = 0; j < newRows.length; j++) {
-      var newRow = newRows[j];
-      if (!newRow.label) continue;
-      var oldRow = oldByLabel[newRow.label];
-      if (!oldRow) continue;
+      var currentConfig = serializeLayout();
+      var oldRows = flattenRows(_savedLayout);
+      var newRows = flattenRows(currentConfig);
 
-      var rowMap = SeatEngine.computeRowRemap(
-        oldRow, newRow,
-        currentConfig.startX || 100,
-        currentConfig.spacing || 45,
-        zoneRects
-      );
-      for (var k in rowMap) {
-        if (rowMap.hasOwnProperty(k)) {
-          fullRemap[k] = rowMap[k];
+      var oldByLabel = {};
+      for (var i = 0; i < oldRows.length; i++) {
+        if (oldRows[i].label) oldByLabel[oldRows[i].label] = oldRows[i];
+      }
+
+      var fullRemap = {};
+      var fullRemoved = [];
+      for (var j = 0; j < newRows.length; j++) {
+        var newRow = newRows[j];
+        if (!newRow.label) continue;
+        var oldRow = oldByLabel[newRow.label];
+        if (!oldRow) continue;
+
+        var result = SeatEngine.computeRowRemap(
+          oldRow, newRow,
+          currentConfig.startX || 100,
+          currentConfig.spacing || 45,
+          []
+        );
+        for (var k in result.map) {
+          if (result.map.hasOwnProperty(k)) fullRemap[k] = result.map[k];
         }
+        fullRemoved = fullRemoved.concat(result.removed);
       }
-    }
 
-    if (Object.keys(fullRemap).length === 0) {
-      alert('No hay cambios de numeración detectados entre el layout guardado y el actual.');
-      return;
-    }
-
-    // Build preview HTML
-    var rows = Object.keys(fullRemap).map(function(old) {
-      return '<tr><td style="padding:2px 8px;">' + old + '</td><td style="padding:2px 8px;">→</td><td style="padding:2px 8px;font-weight:600;">' + fullRemap[old] + '</td></tr>';
+      remapInput.value   = JSON.stringify(fullRemap);
+      removedInput.value = JSON.stringify(fullRemoved);
     });
-
-    var total = rows.length;
-    var preview = rows.slice(0, 20).join('');
-    if (total > 20) {
-      preview += '<tr><td colspan="3" style="color:#666;padding:4px 8px;">...y ' + (total - 20) + ' más</td></tr>';
-    }
-
-    var confirmed = confirm(
-      'Se renombrarán ' + total + ' asiento(s) en pedidos, ledger y reservas:\n\n' +
-      Object.keys(fullRemap).slice(0, 10).map(function(o){ return o + ' → ' + fullRemap[o]; }).join('\n') +
-      (total > 10 ? '\n...y ' + (total - 10) + ' más' : '') +
-      '\n\n¿Continuar? Esta operación NO puede deshacerse.'
-    );
-
-    if (!confirmed) return;
-
-    remapBtn.disabled = true;
-    remapBtn.textContent = 'Aplicando...';
-
-    var newLayoutJson = JSON.stringify(currentConfig);
-
-    var xhr = new XMLHttpRequest();
-    xhr.open('POST', data.ajaxUrl, true);
-    xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-    xhr.onload = function () {
-      var resp;
-      try { resp = JSON.parse(xhr.responseText); } catch(e) { resp = null; }
-      if (resp && resp.success) {
-        // Update hidden input with new layout
-        hiddenInput.value = newLayoutJson;
-        _savedLayout = JSON.parse(newLayoutJson);
-
-        remapBtn.textContent = 'Remap aplicado ✓ (' + (resp.data.updated || 0) + ' pedidos)';
-        remapBtn.style.background = '#059669';
-        notice.textContent = 'Remap completado. Guarda el evento para confirmar el nuevo layout.';
-        notice.style.color = '#065f46';
-      } else {
-        var msg = (resp && resp.data) ? resp.data : 'Error desconocido';
-        alert('Error al aplicar el remap: ' + msg);
-        remapBtn.disabled = false;
-        remapBtn.textContent = 'Cambiar numeración (remap)';
-      }
-    };
-    xhr.onerror = function () {
-      alert('Error de red al aplicar el remap.');
-      remapBtn.disabled = false;
-      remapBtn.textContent = 'Cambiar numeración (remap)';
-    };
-
-    var params = 'action=ss_remap_seats' +
-      '&nonce=' + encodeURIComponent(data.nonce) +
-      '&event_id=' + encodeURIComponent(eventId) +
-      '&remap=' + encodeURIComponent(JSON.stringify(fullRemap)) +
-      '&new_layout=' + encodeURIComponent(newLayoutJson);
-
-    xhr.send(params);
-  });
+  }
 
   // ─── Repair tool (patch ledger + meta without touching orders) ──
-  // Shows a collapsible section where admin can paste a raw remap JSON
-  // and apply it to only the ledger and reserved-seat metas. Useful when
-  // the automatic remap missed some seats due to a stale _savedLayout.
+  // Lista de pares "silla actual → silla nueva" con filas que se agregan de
+  // a una (sin JSON a mano). Solo actualiza ledger y reservas, útil cuando
+  // el remap automático no cubrió todo por un _savedLayout desincronizado.
 
   var repairDetails = document.createElement('details');
   repairDetails.style.cssText = 'margin-top:10px;font-size:12px;';
   repairDetails.innerHTML =
     '<summary style="cursor:pointer;color:#6b7280;">Reparación manual de IDs</summary>' +
     '<div style="margin-top:6px;padding:8px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:4px;">' +
-      '<p style="margin:0 0 6px;color:#374151;">Pega aquí el JSON del remap que no se aplicó correctamente ' +
+      '<p style="margin:0 0 8px;color:#374151;">Para sillas que el remap automático no ajustó bien ' +
       '(solo actualiza ledger y reservas, <strong>no</strong> toca pedidos):</p>' +
-      '<textarea id="ss-patch-json" rows="4" style="width:100%;font-size:11px;font-family:monospace;" ' +
-      'placeholder=\'{"D1":"D11","D2":"D10"}\'></textarea>' +
-      '<button type="button" id="ss-patch-btn" style="margin-top:4px;background:#7c3aed;color:#fff;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;">Aplicar parche</button>' +
+      '<div id="ss-patch-rows"></div>' +
+      '<button type="button" id="ss-patch-add-row" style="margin-top:4px;background:#fff;color:#374151;border:1px solid #d1d5db;padding:4px 10px;border-radius:4px;cursor:pointer;">+ Agregar par</button>' +
+      '<br>' +
+      '<button type="button" id="ss-patch-btn" style="margin-top:8px;background:#7c3aed;color:#fff;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;">Aplicar parche</button>' +
       '<span id="ss-patch-msg" style="margin-left:8px;font-size:11px;"></span>' +
     '</div>';
 
-  if (remapBtn.parentNode) {
-    remapBtn.parentNode.insertBefore(repairDetails, notice.nextSibling || null);
+  insertAfterAnchor(repairDetails);
+
+  var patchRowsEl = document.getElementById('ss-patch-rows');
+
+  function addPatchRow() {
+    var row = document.createElement('div');
+    row.style.cssText = 'margin-bottom:4px;';
+    row.innerHTML =
+      '<input type="text" class="ss-patch-old" size="6" placeholder="D1"> → ' +
+      '<input type="text" class="ss-patch-new" size="6" placeholder="D11"> ' +
+      '<button type="button" class="ss-patch-row-remove" style="color:#dc2626;background:none;border:none;cursor:pointer;">✕</button>';
+    row.querySelector('.ss-patch-row-remove').addEventListener('click', function () {
+      row.remove();
+    });
+    patchRowsEl.appendChild(row);
   }
+  addPatchRow();
+  document.getElementById('ss-patch-add-row').addEventListener('click', addPatchRow);
 
   document.getElementById('ss-patch-btn').addEventListener('click', function () {
-    var raw = (document.getElementById('ss-patch-json').value || '').trim();
     var patchMsg = document.getElementById('ss-patch-msg');
     var patchBtn = document.getElementById('ss-patch-btn');
-    if (!raw) { patchMsg.textContent = 'El campo está vacío.'; return; }
 
-    var patchRemap;
-    try { patchRemap = JSON.parse(raw); } catch(e) { patchMsg.textContent = 'JSON inválido.'; return; }
-    if (typeof patchRemap !== 'object' || Array.isArray(patchRemap)) {
-      patchMsg.textContent = 'Debe ser un objeto {"old":"new",...}'; return;
+    var patchRemap = {};
+    var oldInputs = patchRowsEl.querySelectorAll('.ss-patch-old');
+    var newInputs = patchRowsEl.querySelectorAll('.ss-patch-new');
+    for (var i = 0; i < oldInputs.length; i++) {
+      var oldVal = oldInputs[i].value.trim();
+      var newVal = newInputs[i].value.trim();
+      if (oldVal && newVal) { patchRemap[oldVal] = newVal; }
     }
 
     var keys = Object.keys(patchRemap);
-    if (keys.length === 0) { patchMsg.textContent = 'El remap está vacío.'; return; }
+    if (keys.length === 0) { patchMsg.textContent = 'Completá al menos un par.'; return; }
 
     if (!confirm('Se aplicará el parche a ' + keys.length + ' asiento(s) en el ledger y las metas de reservas.\n\n' +
         keys.slice(0, 10).map(function(o){ return o + ' → ' + patchRemap[o]; }).join('\n') +
@@ -319,6 +295,68 @@
       '&nonce=' + encodeURIComponent(data.nonce) +
       '&event_id=' + encodeURIComponent(eventId) +
       '&patch_remap=' + encodeURIComponent(JSON.stringify(patchRemap))
+    );
+  });
+
+  // ─── Renombrar una silla individual ──────────────────────────────
+  // Para casos que no encajan con removedSeats/renumber (ej. una silla
+  // suelta con un tag distinto al que le tocaría por posición). Usa el
+  // mismo motor que el remap automático (ss_remap_event_seats), solo que
+  // con un único par {old:new} en vez de uno calculado por fila.
+
+  var renameDetails = document.createElement('details');
+  renameDetails.style.cssText = 'margin-top:10px;font-size:12px;';
+  renameDetails.innerHTML =
+    '<summary style="cursor:pointer;color:#6b7280;">Renombrar una silla individual</summary>' +
+    '<div style="margin-top:6px;padding:8px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:4px;">' +
+      '<label style="margin-right:8px;">Silla actual: <input type="text" id="ss-rename-old" size="6" placeholder="F5"></label>' +
+      '<label style="margin-right:8px;">Nuevo tag: <input type="text" id="ss-rename-new" size="6" placeholder="F5B"></label>' +
+      '<button type="button" id="ss-rename-btn" style="margin-top:4px;background:#7c3aed;color:#fff;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;">Renombrar</button>' +
+      '<span id="ss-rename-msg" style="margin-left:8px;font-size:11px;"></span>' +
+    '</div>';
+
+  insertAfterAnchor(renameDetails);
+
+  document.getElementById('ss-rename-btn').addEventListener('click', function () {
+    var oldId = (document.getElementById('ss-rename-old').value || '').trim();
+    var newId = (document.getElementById('ss-rename-new').value || '').trim();
+    var renameMsg = document.getElementById('ss-rename-msg');
+    var renameBtn = document.getElementById('ss-rename-btn');
+
+    if (!oldId || !newId) { renameMsg.textContent = 'Completá ambos campos.'; return; }
+    if (oldId === newId) { renameMsg.textContent = 'Los IDs son iguales.'; return; }
+
+    if (!confirm('Se va a renombrar el asiento "' + oldId + '" a "' + newId + '" en ledger, pedidos, check-ins y reservas.\n\n¿Continuar?')) return;
+
+    renameBtn.disabled = true;
+    renameMsg.textContent = 'Aplicando...';
+
+    var xhr3 = new XMLHttpRequest();
+    xhr3.open('POST', data.ajaxUrl, true);
+    xhr3.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+    xhr3.onload = function () {
+      var resp;
+      try { resp = JSON.parse(xhr3.responseText); } catch(e) { resp = null; }
+      if (resp && resp.success) {
+        renameMsg.style.color = '#059669';
+        renameMsg.textContent = 'Listo ✓ (' + (resp.data.updated || 0) + ' pedidos actualizados)';
+      } else {
+        renameMsg.style.color = '#dc2626';
+        renameMsg.textContent = 'Error: ' + ((resp && resp.data) ? resp.data : 'desconocido');
+      }
+      renameBtn.disabled = false;
+    };
+    xhr3.onerror = function () {
+      renameMsg.style.color = '#dc2626';
+      renameMsg.textContent = 'Error de red.';
+      renameBtn.disabled = false;
+    };
+    xhr3.send(
+      'action=ss_rename_single_seat' +
+      '&nonce=' + encodeURIComponent(data.nonce) +
+      '&event_id=' + encodeURIComponent(eventId) +
+      '&old_id=' + encodeURIComponent(oldId) +
+      '&new_id=' + encodeURIComponent(newId)
     );
   });
 

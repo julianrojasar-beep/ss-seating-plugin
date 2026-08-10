@@ -3,7 +3,7 @@
  * Plugin Name: SS Seating
  * Plugin URI: https://tusitio.com
  * Description: Sistema de selección de sillas y venta de boletas con QR para eventos.
- * Version: 1.3.24
+ * Version: 1.3.25
  * Author: Julian Rojas
  * Author URI: https://tusitio.com
  * License: GPL v2 or later
@@ -398,6 +398,72 @@ function ss_event_has_seat_activity( int $event_id ): bool {
     return false;
 }
 
+/**
+ * Re-clava seat_id en wp_ss_seat_ledger en 2 fases, por `id` (PK) en vez de
+ * por seat_id. Un remap "corrido" (F8→F9, F9→F10, F10→F11...) con un solo
+ * UPDATE por CASE seat_id puede violar el índice único (event_id, seat_id) a
+ * mitad de camino si dos filas coinciden momentáneamente en el mismo valor
+ * mientras MySQL procesa las filas — esa fila puntual se pierde sin avisar.
+ * Pasar primero por un valor temporal único (por id) antes de escribir el
+ * valor final elimina esa colisión sin importar el orden en que MySQL
+ * recorra las filas.
+ *
+ * @return int Cantidad de filas del ledger actualizadas.
+ */
+function ss_remap_ledger_seat_ids( int $event_id, array $remap ): int {
+    if ( empty( $remap ) ) {
+        return 0;
+    }
+
+    global $wpdb;
+    $eid          = (int) $event_id;
+    $ledger_table = $wpdb->prefix . 'ss_seat_ledger';
+    $old_ids      = array_map( 'strval', array_keys( $remap ) );
+
+    $placeholders = implode( ', ', array_fill( 0, count( $old_ids ), '%s' ) );
+    $ledger_rows  = $wpdb->get_results(
+        $wpdb->prepare(
+            "SELECT id, seat_id FROM `{$ledger_table}` WHERE event_id = %d AND seat_id IN ({$placeholders})",
+            array_merge( array( $eid ), $old_ids )
+        ),
+        ARRAY_A
+    );
+
+    if ( empty( $ledger_rows ) ) {
+        return 0;
+    }
+
+    $temp_cases  = array();
+    $final_cases = array();
+    $row_ids     = array();
+    foreach ( $ledger_rows as $lr ) {
+        $row_id = (int) $lr['id'];
+        $new_id = $remap[ $lr['seat_id'] ] ?? null;
+        if ( $new_id === null ) { continue; }
+        $row_ids[]     = $row_id;
+        $temp_cases[]  = "WHEN {$row_id} THEN '__remap_tmp_{$row_id}'";
+        $final_cases[] = "WHEN {$row_id} THEN '" . esc_sql( (string) $new_id ) . "'";
+    }
+
+    if ( empty( $row_ids ) ) {
+        return 0;
+    }
+
+    $id_list = implode( ', ', $row_ids );
+
+    // Fase 1: valores temporales únicos (por id, no puede colisionar).
+    $temp_expr = 'CASE id ' . implode( ' ', $temp_cases ) . ' ELSE seat_id END';
+    // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+    $wpdb->query( "UPDATE `{$ledger_table}` SET seat_id = {$temp_expr} WHERE id IN ({$id_list})" );
+
+    // Fase 2: valores finales — ya no hay riesgo de colisión con las filas que se están moviendo.
+    $final_expr = 'CASE id ' . implode( ' ', $final_cases ) . ' ELSE seat_id END';
+    // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+    $wpdb->query( "UPDATE `{$ledger_table}` SET seat_id = {$final_expr} WHERE id IN ({$id_list})" );
+
+    return count( $row_ids );
+}
+
 // ── Remap seat IDs across all storage locations ───────────────────────────────
 function ss_remap_event_seats( int $event_id, array $remap ): array {
     if ( empty( $remap ) ) {
@@ -407,22 +473,8 @@ function ss_remap_event_seats( int $event_id, array $remap ): array {
     global $wpdb;
     $updated = 0;
 
-    // 1. wp_ss_seat_ledger — atomic CASE update to handle circular pairs (e.g. A5↔A7).
-    //    Sequential UPDATEs would undo circular swaps; a single CASE expression is atomic.
-    $ledger_table = $wpdb->prefix . 'ss_seat_ledger';
-    $case_parts   = array();
-    $old_escaped  = array();
-    foreach ( $remap as $old_id => $new_id ) {
-        $old_q        = "'" . esc_sql( (string) $old_id ) . "'";
-        $new_q        = "'" . esc_sql( (string) $new_id ) . "'";
-        $case_parts[] = "WHEN {$old_q} THEN {$new_q}";
-        $old_escaped[] = $old_q;
-    }
-    $case_expr = 'CASE seat_id ' . implode( ' ', $case_parts ) . ' ELSE seat_id END';
-    $in_list   = implode( ', ', $old_escaped );
-    $eid       = (int) $event_id;
-    // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-    $wpdb->query( "UPDATE `{$ledger_table}` SET seat_id = {$case_expr} WHERE event_id = {$eid} AND seat_id IN ({$in_list})" );
+    // 1. wp_ss_seat_ledger
+    ss_remap_ledger_seat_ids( $event_id, $remap );
 
     // 2. Orders: order meta, item meta, checkins, tokens
     $orders = wc_get_orders( array(
@@ -434,10 +486,14 @@ function ss_remap_event_seats( int $event_id, array $remap ): array {
 
     foreach ( $orders as $order ) {
         $changed = false;
+        $applied = array(); // old seat_id => new seat_id, para el rastro que ve check-in
 
         // order meta ss_seats
         $seats = $order->get_meta( 'ss_seats' );
         if ( is_array( $seats ) ) {
+            foreach ( $seats as $s ) {
+                if ( isset( $remap[ $s ] ) ) { $applied[ $s ] = $remap[ $s ]; }
+            }
             $new_seats = array_map( function( $s ) use ( $remap ) { return isset( $remap[ $s ] ) ? $remap[ $s ] : $s; }, $seats );
             if ( $new_seats !== $seats ) {
                 $order->update_meta_data( 'ss_seats', $new_seats );
@@ -485,6 +541,14 @@ function ss_remap_event_seats( int $event_id, array $remap ): array {
         }
 
         if ( $changed ) {
+            if ( ! empty( $applied ) ) {
+                $remap_log = $order->get_meta( '_ss_seat_remap_log' );
+                if ( ! is_array( $remap_log ) ) { $remap_log = array(); }
+                foreach ( $applied as $old_seat => $new_seat ) {
+                    $remap_log[] = array( 'old' => $old_seat, 'new' => $new_seat, 'at' => current_time( 'mysql' ) );
+                }
+                $order->update_meta_data( '_ss_seat_remap_log', $remap_log );
+            }
             $order->save();
             $updated++;
         }
@@ -565,22 +629,8 @@ function ss_ajax_patch_seats(): void {
     global $wpdb;
     $log = array();
 
-    // Patch ledger only (atomic CASE — same logic as ss_remap_event_seats)
-    $ledger_table = $wpdb->prefix . 'ss_seat_ledger';
-    $case_parts   = array();
-    $old_escaped  = array();
-    foreach ( $remap as $old_id => $new_id ) {
-        $old_q         = "'" . esc_sql( (string) $old_id ) . "'";
-        $new_q         = "'" . esc_sql( (string) $new_id ) . "'";
-        $case_parts[]  = "WHEN {$old_q} THEN {$new_q}";
-        $old_escaped[] = $old_q;
-    }
-    $case_expr = 'CASE seat_id ' . implode( ' ', $case_parts ) . ' ELSE seat_id END';
-    $in_list   = implode( ', ', $old_escaped );
-    $eid       = (int) $event_id;
-    // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-    $rows = $wpdb->query( "UPDATE `{$ledger_table}` SET seat_id = {$case_expr} WHERE event_id = {$eid} AND seat_id IN ({$in_list})" );
-    $log['ledger_rows'] = $rows;
+    // Patch ledger only (mismo motor en 2 fases que ss_remap_event_seats)
+    $log['ledger_rows'] = ss_remap_ledger_seat_ids( $event_id, $remap );
 
     // Patch _ss_reserved_seats
     $reserved = get_post_meta( $event_id, '_ss_reserved_seats', true );
@@ -605,6 +655,74 @@ function ss_ajax_patch_seats(): void {
     }
 
     wp_send_json_success( $log );
+}
+
+/**
+ * Devuelve, de una lista de seat_id, cuáles están ocupados de verdad
+ * (status 'sold' o 'manual_reserved' en el ledger) junto con su order_id.
+ * Se usa para avisar antes de que un cambio de layout deje una silla
+ * vendida sin asiento en el mapa nuevo.
+ *
+ * @return array [ seat_id => [ 'status' => 'sold'|'manual_reserved', 'order_id' => int ], ... ]
+ */
+function ss_get_seat_ledger_occupied( int $event_id, array $seat_ids ): array {
+    if ( empty( $seat_ids ) ) {
+        return array();
+    }
+    global $wpdb;
+    $table = $wpdb->prefix . 'ss_seat_ledger';
+    if ( $wpdb->get_var( "SHOW TABLES LIKE '{$table}'" ) !== $table ) {
+        return array();
+    }
+
+    $placeholders = implode( ', ', array_fill( 0, count( $seat_ids ), '%s' ) );
+    $args         = array_merge( array( $event_id ), array_values( $seat_ids ) );
+
+    $rows = $wpdb->get_results(
+        $wpdb->prepare(
+            "SELECT seat_id, status, order_id FROM `{$table}`
+             WHERE event_id = %d AND status IN ('sold','manual_reserved') AND seat_id IN ({$placeholders})",
+            ...$args
+        ),
+        ARRAY_A
+    );
+
+    $occupied = array();
+    foreach ( (array) $rows as $row ) {
+        $occupied[ $row['seat_id'] ] = array(
+            'status'   => $row['status'],
+            'order_id' => (int) $row['order_id'],
+        );
+    }
+    return $occupied;
+}
+
+add_action( 'wp_ajax_ss_rename_single_seat', 'ss_ajax_rename_single_seat' );
+function ss_ajax_rename_single_seat(): void {
+    check_ajax_referer( 'ss_remap_seats', 'nonce' );
+    if ( ! current_user_can( 'edit_posts' ) ) {
+        wp_send_json_error( 'Unauthorized' );
+    }
+
+    $event_id = isset( $_POST['event_id'] ) ? absint( $_POST['event_id'] ) : 0;
+    $old_id   = isset( $_POST['old_id'] ) ? sanitize_text_field( wp_unslash( $_POST['old_id'] ) ) : '';
+    $new_id   = isset( $_POST['new_id'] ) ? sanitize_text_field( wp_unslash( $_POST['new_id'] ) ) : '';
+
+    if ( ! $event_id || $old_id === '' || $new_id === '' ) {
+        wp_send_json_error( 'Datos incompletos' );
+    }
+    if ( $old_id === $new_id ) {
+        wp_send_json_error( 'El ID nuevo es igual al actual' );
+    }
+
+    // El nuevo ID no puede colisionar con una silla ya existente en el ledger de este evento.
+    $collision = ss_get_seat_ledger_occupied( $event_id, array( $new_id ) );
+    if ( ! empty( $collision ) ) {
+        wp_send_json_error( "\"{$new_id}\" ya está en uso por el pedido #" . $collision[ $new_id ]['order_id'] );
+    }
+
+    $result = ss_remap_event_seats( $event_id, array( $old_id => $new_id ) );
+    wp_send_json_success( $result );
 }
 
 // ss_ajax_parse_mp_csv eliminado — el cierre contable usa WooCommerce como fuente de verdad.
@@ -716,7 +834,13 @@ function ss_seating_save_metabox($post_id, $post) {
         $raw_layout = wp_unslash($_POST['ss_layout_json']);
         $raw_layout = is_string($raw_layout) ? trim($raw_layout) : '';
 
-        // Bloquear cambios al layout si hay actividad de asientos
+        // Si hay actividad de asientos, el guardado normal re-clava (remap) los
+        // seat_id que cambiaron en vez de bloquear — el único caso que sí frena
+        // el guardado es que una silla removida tenga una venta/reserva real.
+        // El diccionario {oldId:newId} y la lista de sillas removidas los calcula
+        // el JS del builder comparando el layout viejo vs. el nuevo (ver
+        // assets/js/ss-admin-builder-init.js) y viajan en ss_layout_remap /
+        // ss_layout_removed junto con el layout.
         if ( ss_event_has_seat_activity( $post_id ) ) {
             $existing_layout = get_post_meta( $post_id, '_ss_layout', true );
             $new_layout      = '';
@@ -727,13 +851,32 @@ function ss_seating_save_metabox($post_id, $post) {
                 }
             }
             if ( $new_layout !== $existing_layout ) {
-                set_transient(
-                    'ss_layout_locked_' . $post_id,
-                    'No se puede modificar el layout porque ya existen sillas vendidas o reservadas en este evento.',
-                    30
-                );
-                // No guardar — saltar al resto del save
-                goto ss_layout_save_done;
+                $removed_raw = isset( $_POST['ss_layout_removed'] ) ? wp_unslash( $_POST['ss_layout_removed'] ) : '[]';
+                $removed_ids = json_decode( $removed_raw, true );
+                $removed_ids = is_array( $removed_ids )
+                    ? array_values( array_filter( array_map( 'sanitize_text_field', $removed_ids ) ) )
+                    : array();
+
+                $occupied = ss_get_seat_ledger_occupied( $post_id, $removed_ids );
+                if ( ! empty( $occupied ) ) {
+                    $details = array();
+                    foreach ( $occupied as $seat_id => $info ) {
+                        $details[] = "{$seat_id} (pedido #{$info['order_id']})";
+                    }
+                    set_transient(
+                        'ss_layout_locked_' . $post_id,
+                        'No se guardó el layout: estas sillas removidas tienen una venta/reserva asociada — reasigná esos pedidos antes de continuar: ' . implode( ', ', $details ),
+                        30
+                    );
+                    // No guardar — saltar al resto del save
+                    goto ss_layout_save_done;
+                }
+
+                $remap_raw = isset( $_POST['ss_layout_remap'] ) ? wp_unslash( $_POST['ss_layout_remap'] ) : '{}';
+                $remap     = json_decode( $remap_raw, true );
+                if ( is_array( $remap ) && ! empty( $remap ) ) {
+                    ss_remap_event_seats( $post_id, $remap );
+                }
             }
         }
 
@@ -785,6 +928,57 @@ function ss_layout_get_rows( array $layout ): array {
         return $all_rows;
     }
     return isset( $layout['rows'] ) && is_array( $layout['rows'] ) ? $layout['rows'] : array();
+}
+
+/**
+ * Genera los seat_id reales de una fila del layout, replicando el algoritmo
+ * de generateRow() en assets/js/seat-engine.js: `reverse` invierte la
+ * numeración y `renumber` hace que los números salten los removedSeats y
+ * queden consecutivos (en vez de dejar huecos en la numeración).
+ * Debe mantenerse en sync 1:1 con seat-engine.js — si ese algoritmo cambia,
+ * este debe cambiar igual, o el conteo de disponibilidad queda desincronizado
+ * de los seat_id que el cliente realmente selecciona y compra.
+ *
+ * @param array $row Fila del layout (label, count, removedSeats, reverse, renumber).
+ * @return array Lista de seat_id (ej. ['A1','A2',...]) en orden de slot físico.
+ */
+function ss_layout_row_seat_ids( array $row ): array {
+    $label    = isset( $row['label'] ) ? (string) $row['label'] : '';
+    $count    = isset( $row['count'] ) ? (int) $row['count'] : 0;
+    $reverse  = ! empty( $row['reverse'] );
+    $renumber = ! empty( $row['renumber'] );
+
+    $removed = array();
+    if ( ! empty( $row['removedSeats'] ) && is_array( $row['removedSeats'] ) ) {
+        foreach ( $row['removedSeats'] as $rs ) {
+            $removed[ (int) $rs ] = true;
+        }
+    }
+
+    $total_visible = 0;
+    if ( $renumber ) {
+        for ( $k = 1; $k <= $count; $k++ ) {
+            if ( ! isset( $removed[ $k ] ) ) {
+                $total_visible++;
+            }
+        }
+    }
+
+    $seat_ids      = array();
+    $visible_index = 0;
+    for ( $i = 1; $i <= $count; $i++ ) {
+        if ( isset( $removed[ $i ] ) ) {
+            continue;
+        }
+        $visible_index++;
+        if ( $renumber ) {
+            $seat_num = $reverse ? ( $total_visible - $visible_index + 1 ) : $visible_index;
+        } else {
+            $seat_num = $reverse ? ( $count - $i + 1 ) : $i;
+        }
+        $seat_ids[] = $label . $seat_num;
+    }
+    return $seat_ids;
 }
 
 function ss_sync_zones_to_ticket_types($post_id) {
@@ -3757,77 +3951,224 @@ function ss_control_ingreso_render( string $state, int $event_id, string $token 
         <title>Control de Ingreso · <?php echo esc_html( $event_title ); ?></title>
         <style>
             * { box-sizing: border-box; margin: 0; padding: 0; }
+            html { -webkit-text-size-adjust: 100%; }
             body {
                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
                 background: #1a1a2e;
                 color: #eee;
                 min-height: 100vh;
+                padding-bottom: 32px;
             }
+
+            /* Header: compacto y pegado arriba (sticky) */
             .ci-header {
+                position: sticky;
+                top: 0;
+                z-index: 60;
                 background: #16213e;
-                padding: 16px 24px;
+                padding: 10px 14px;
+                height: 52px;
                 display: flex;
                 align-items: center;
                 justify-content: space-between;
-                gap: 12px;
-                flex-wrap: wrap;
+                gap: 10px;
+                flex-wrap: nowrap;
+                overflow: hidden;
                 border-bottom: 2px solid #0f3460;
             }
-            .ci-header h1 { font-size: 18px; font-weight: 700; color: #e94560; }
-            .ci-header .ci-event { font-size: 14px; opacity: .7; }
-            .ci-back { font-size: 20px; color: #90caf9; line-height: 1; text-decoration: none; opacity: .7; transition: opacity .15s; }
-            .ci-back:hover { opacity: 1; color: #fff; }
-            .ci-layout {
-                display: flex;
-                gap: 24px;
-                padding: 24px;
-                max-width: 1100px;
-                margin: 0 auto;
-                flex-wrap: wrap;
+            .ci-header h1 { font-size: 15px; font-weight: 700; color: #e94560; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            .ci-header .ci-event { font-size: 12px; opacity: .7; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 46vw; }
+            .ci-back {
+                font-size: 20px; color: #90caf9; line-height: 1; text-decoration: none; opacity: .8;
+                display: flex; align-items: center; justify-content: center;
+                width: 36px; height: 36px; margin: -6px 0; border-radius: 8px;
+                transition: opacity .15s, background .15s;
             }
-            .ci-camera-col { flex: 0 0 340px; max-width: 100%; }
-            .ci-result-col { flex: 1; min-width: 300px; }
-            .ci-camera-status {
-                margin-top: 8px;
-                font-size: 13px;
-                color: #aaa;
-                font-style: italic;
-            }
+            .ci-back:hover, .ci-back:active { opacity: 1; color: #fff; background: rgba(255,255,255,.08); }
 
-            /* Feedback card */
-            .ci-feedback {
-                padding: 32px 24px;
-                border-radius: 16px;
-                min-height: 220px;
-                display: flex;
-                flex-direction: column;
+            .ci-counter {
+                display: inline-flex;
                 align-items: center;
-                justify-content: center;
-                text-align: center;
-                transition: all .3s ease;
+                gap: 6px;
+                background: #0f3460;
+                padding: 5px 12px;
+                border-radius: 8px;
+                font-size: 12px;
+                font-weight: 600;
+                white-space: nowrap;
+            }
+            .ci-counter-num { color: #4caf50; font-size: 18px; }
+
+            /* Resultado del escaneo: sticky justo debajo del header,
+               SIEMPRE visible sin necesidad de hacer scroll (mobile y desktop) */
+            .ci-feedback-wrap {
+                position: sticky;
+                top: 52px;
+                z-index: 50;
+                background: #1a1a2e;
+                padding: 10px 14px 0;
+                max-height: 400px;
+                opacity: 1;
+                overflow: hidden;
+                transition: max-height .35s ease, opacity .35s ease, padding .35s ease;
+            }
+            .ci-feedback-wrap.ci-dismissed {
+                max-height: 0;
+                opacity: 0;
+                padding-top: 0;
+                padding-bottom: 0;
+            }
+            .ci-feedback {
+                position: relative;
+                padding: 14px 40px 14px 16px;
+                border-radius: 14px;
+                display: flex;
+                flex-direction: row;
+                align-items: center;
+                gap: 14px;
+                text-align: left;
+                transition: background .2s ease, border-color .2s ease;
                 background: #16213e;
                 border: 2px solid #0f3460;
+                box-shadow: 0 4px 14px rgba(0,0,0,.35);
+            }
+            .ci-feedback-close {
+                position: absolute;
+                top: 8px;
+                right: 8px;
+                width: 28px;
+                height: 28px;
+                border: none;
+                border-radius: 50%;
+                background: rgba(0,0,0,.25);
+                color: #fff;
+                font-size: 16px;
+                line-height: 1;
+                cursor: pointer;
+                display: none;
+            }
+            .ci-feedback.ci-valid .ci-feedback-close,
+            .ci-feedback.ci-already .ci-feedback-close,
+            .ci-feedback.ci-invalid .ci-feedback-close {
+                display: block;
             }
             .ci-feedback.ci-valid   { background: #1b5e20; border-color: #4caf50; }
             .ci-feedback.ci-already { background: #e65100; border-color: #ff9800; }
             .ci-feedback.ci-invalid { background: #b71c1c; border-color: #f44336; }
             .ci-feedback.ci-loading { background: #0d47a1; border-color: #2196f3; }
 
-            .ci-icon { font-size: 72px; line-height: 1; }
-            .ci-msg  { font-size: 22px; font-weight: 700; margin-top: 12px; }
+            .ci-feedback-body { flex: 1; min-width: 0; }
+            .ci-icon { font-size: 38px; line-height: 1; flex: 0 0 auto; }
+            .ci-msg  { font-size: 17px; font-weight: 700; line-height: 1.25; }
             .ci-details {
                 display: none;
-                margin-top: 16px;
-                font-size: 14px;
-                width: 100%;
+                margin-top: 8px;
+                font-size: 13px;
             }
-            .ci-details table { margin: 0 auto; text-align: left; line-height: 2; }
-            .ci-details td:first-child { padding-right: 12px; font-weight: 600; opacity: .8; }
+            .ci-details table { text-align: left; line-height: 1.7; }
+            .ci-details td:first-child { padding-right: 10px; font-weight: 600; opacity: .8; white-space: nowrap; }
 
-            /* History */
-            .ci-history { margin-top: 24px; }
-            .ci-history h3 { font-size: 15px; margin-bottom: 8px; opacity: .7; }
-            .ci-history table { width: 100%; border-collapse: collapse; font-size: 13px; }
+            /* Camara */
+            .ci-main {
+                max-width: 1100px;
+                margin: 0 auto;
+                padding: 14px;
+            }
+            .ci-camera-col { max-width: 320px; margin: 0 auto; }
+            .ci-qr-box {
+                width: 100%;
+                border-radius: 12px;
+                overflow: hidden;
+                background: #000;
+            }
+            .ci-camera-status {
+                margin-top: 8px;
+                font-size: 13px;
+                color: #aaa;
+                font-style: italic;
+                text-align: center;
+            }
+
+            /* Stats panel: franja compacta con scroll horizontal en mobile */
+            .ci-stats-panel { margin-top: 18px; }
+            .ci-stats-panel h3,
+            .ci-history > summary { font-size: 13px; margin-bottom: 8px; opacity: .7; text-transform: uppercase; letter-spacing: .4px; }
+            .ci-stats-grid {
+                display: flex;
+                gap: 10px;
+                flex-wrap: nowrap;
+                overflow-x: auto;
+                padding-bottom: 4px;
+                -webkit-overflow-scrolling: touch;
+            }
+            .ci-zone-card {
+                background: #16213e;
+                border: 1px solid #0f3460;
+                border-radius: 10px;
+                padding: 12px 16px;
+                min-width: 130px;
+                flex: 0 0 auto;
+            }
+            .ci-zone-name {
+                font-size: 11px;
+                text-transform: uppercase;
+                letter-spacing: .5px;
+                color: #aaa;
+                margin-bottom: 6px;
+                white-space: nowrap;
+            }
+            .ci-zone-numbers {
+                font-size: 24px;
+                font-weight: 700;
+                color: #4caf50;
+            }
+            .ci-zone-numbers .ci-zone-cap {
+                font-size: 14px;
+                color: #777;
+                font-weight: 400;
+            }
+            .ci-zone-bar {
+                margin-top: 8px;
+                height: 6px;
+                background: #0f3460;
+                border-radius: 3px;
+                overflow: hidden;
+            }
+            .ci-zone-bar-fill {
+                height: 100%;
+                background: #4caf50;
+                border-radius: 3px;
+                transition: width .5s ease;
+            }
+            .ci-stats-total {
+                margin-top: 10px;
+                font-size: 14px;
+                font-weight: 700;
+                color: #e94560;
+            }
+
+            /* Historial: colapsado por defecto (details/summary nativo, sin JS extra) */
+            .ci-history { margin-top: 18px; }
+            .ci-history > summary {
+                cursor: pointer;
+                list-style: none;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                min-height: 40px;
+                padding: 6px 4px;
+                user-select: none;
+            }
+            .ci-history > summary::-webkit-details-marker { display: none; }
+            .ci-history > summary::before {
+                content: '\25B8';
+                display: inline-block;
+                transition: transform .15s ease;
+                opacity: .6;
+            }
+            .ci-history[open] > summary::before { transform: rotate(90deg); }
+            .ci-history-scroll { overflow-x: auto; }
+            .ci-history table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 480px; }
             .ci-history th { text-align: left; padding: 6px 8px; background: #16213e; color: #aaa; border-bottom: 1px solid #0f3460; }
             .ci-history td { padding: 6px 8px; border-bottom: 1px solid rgba(255,255,255,.06); }
             .ci-history tr:hover td { background: rgba(255,255,255,.03); }
@@ -3851,80 +4192,30 @@ function ss_control_ingreso_render( string $state, int $event_id, string $token 
             .ci-denied h1 { font-size: 24px; margin-top: 16px; color: #f44336; }
             .ci-denied p  { margin-top: 8px; opacity: .6; }
 
-            /* Counter */
-            .ci-counter {
-                display: inline-flex;
-                align-items: center;
-                gap: 8px;
-                background: #0f3460;
-                padding: 6px 14px;
-                border-radius: 8px;
-                font-size: 14px;
-                font-weight: 600;
-            }
-            .ci-counter-num { color: #4caf50; font-size: 22px; }
+            /* Desktop / tablet: mas aire, camara + resultado lado a lado */
+            @media (min-width: 900px) {
+                .ci-header { padding: 16px 24px; height: 64px; }
+                .ci-header .ci-event { max-width: none; }
+                .ci-header h1 { font-size: 18px; }
+                .ci-header .ci-event { font-size: 14px; }
+                .ci-counter { padding: 6px 14px; font-size: 14px; }
+                .ci-counter-num { font-size: 22px; }
 
-            /* Stats panel */
-            .ci-stats-panel {
-                max-width: 1100px;
-                margin: 0 auto;
-                padding: 16px 24px 0;
-            }
-            .ci-stats-grid {
-                display: flex;
-                gap: 12px;
-                flex-wrap: wrap;
-            }
-            .ci-zone-card {
-                background: #16213e;
-                border: 1px solid #0f3460;
-                border-radius: 10px;
-                padding: 14px 18px;
-                min-width: 160px;
-                flex: 1;
-            }
-            .ci-zone-name {
-                font-size: 12px;
-                text-transform: uppercase;
-                letter-spacing: .5px;
-                color: #aaa;
-                margin-bottom: 6px;
-            }
-            .ci-zone-numbers {
-                font-size: 28px;
-                font-weight: 700;
-                color: #4caf50;
-            }
-            .ci-zone-numbers .ci-zone-cap {
-                font-size: 16px;
-                color: #777;
-                font-weight: 400;
-            }
-            .ci-zone-bar {
-                margin-top: 8px;
-                height: 6px;
-                background: #0f3460;
-                border-radius: 3px;
-                overflow: hidden;
-            }
-            .ci-zone-bar-fill {
-                height: 100%;
-                background: #4caf50;
-                border-radius: 3px;
-                transition: width .5s ease;
-            }
-            .ci-stats-total {
-                margin-top: 12px;
-                font-size: 15px;
-                font-weight: 700;
-                color: #e94560;
-            }
+                .ci-feedback-wrap { top: 64px; padding: 16px 24px 0; }
+                .ci-feedback { padding: 24px 28px; }
+                .ci-icon { font-size: 56px; }
+                .ci-msg { font-size: 20px; }
 
-            @media (max-width: 720px) {
-                .ci-layout { flex-direction: column; padding: 16px; }
-                .ci-camera-col { flex: none; width: 100%; }
-                .ci-stats-panel { padding: 12px 16px 0; }
-                .ci-zone-card { min-width: 140px; }
+                .ci-main {
+                    padding: 24px;
+                    display: flex;
+                    gap: 24px;
+                    align-items: flex-start;
+                }
+                .ci-camera-col { flex: 0 0 340px; max-width: none; margin: 0; }
+                .ci-side-col { flex: 1; min-width: 300px; }
+                .ci-stats-panel { margin-top: 0; }
+                .ci-history { margin-top: 24px; }
             }
         </style>
     </head>
@@ -3938,7 +4229,7 @@ function ss_control_ingreso_render( string $state, int $event_id, string $token 
         </div>
     <?php else : ?>
         <header class="ci-header">
-            <div style="display:flex;align-items:center;gap:12px;">
+            <div style="display:flex;align-items:center;gap:10px;">
                 <a href="<?php echo esc_url( home_url( '/box-office/' . $event_id . '/' ) ); ?>" class="ci-back" title="Volver al Box Office">&#8592;</a>
                 <div>
                     <h1>Control de Ingreso</h1>
@@ -3953,50 +4244,55 @@ function ss_control_ingreso_render( string $state, int $event_id, string $token 
             </div>
         </header>
 
-        <div class="ci-stats-panel">
-            <div class="ci-stats-grid" id="ci-stats-grid">
-                <div class="ci-zone-card" style="opacity:.5;">
-                    <div class="ci-zone-name">Cargando...</div>
-                    <div class="ci-zone-numbers">—</div>
-                </div>
-            </div>
-            <div class="ci-stats-total" id="ci-stats-total"></div>
-        </div>
-
-        <div class="ci-layout">
-            <!-- Cámara -->
-            <div class="ci-camera-col">
-                <div id="ci-qr-reader" style="width:340px; max-width:100%; border-radius:12px; overflow:hidden;"></div>
-                <p class="ci-camera-status" id="ci-camera-status">Iniciando cámara...</p>
-            </div>
-
-            <!-- Resultado -->
-            <div class="ci-result-col">
-                <div class="ci-feedback" id="ci-feedback">
-                    <span class="ci-icon" id="ci-icon">&#128247;</span>
+        <!-- Resultado del escaneo: sticky, siempre visible sin scroll -->
+        <div class="ci-feedback-wrap">
+            <div class="ci-feedback" id="ci-feedback">
+                <span class="ci-icon" id="ci-icon">&#128247;</span>
+                <div class="ci-feedback-body">
                     <p class="ci-msg" id="ci-msg">Esperando escaneo...</p>
                     <div class="ci-details" id="ci-details"></div>
                 </div>
-
-                <div class="ci-history">
-                    <h3>Últimos escaneos</h3>
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Hora</th>
-                                <th>Pedido</th>
-                                <th>Comprador</th>
-                                <th>Tipo</th>
-                                <th>Detalle</th>
-                                <th>Estado</th>
-                            </tr>
-                        </thead>
-                        <tbody id="ci-history-body"></tbody>
-                    </table>
-                </div>
+                <button type="button" class="ci-feedback-close" id="ci-feedback-close" title="Cerrar y liberar la cámara" aria-label="Cerrar">&times;</button>
             </div>
         </div>
 
+        <div class="ci-main">
+            <div class="ci-camera-col">
+                <div id="ci-qr-reader" class="ci-qr-box"></div>
+                <p class="ci-camera-status" id="ci-camera-status">Iniciando cámara...</p>
+            </div>
+
+            <div class="ci-side-col">
+                <div class="ci-stats-panel">
+                    <div class="ci-stats-grid" id="ci-stats-grid">
+                        <div class="ci-zone-card" style="opacity:.5;">
+                            <div class="ci-zone-name">Cargando...</div>
+                            <div class="ci-zone-numbers">—</div>
+                        </div>
+                    </div>
+                    <div class="ci-stats-total" id="ci-stats-total"></div>
+                </div>
+
+                <details class="ci-history">
+                    <summary>Últimos escaneos</summary>
+                    <div class="ci-history-scroll">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Hora</th>
+                                    <th>Pedido</th>
+                                    <th>Comprador</th>
+                                    <th>Tipo</th>
+                                    <th>Detalle</th>
+                                    <th>Estado</th>
+                                </tr>
+                            </thead>
+                            <tbody id="ci-history-body"></tbody>
+                        </table>
+                    </div>
+                </details>
+            </div>
+        </div>
         <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
         <script>
             var ssCheckinFrontend = {
@@ -5067,23 +5363,11 @@ function ss_seats_zone_map( int $event_id ): array {
         if ( isset( $row['type'] ) && $row['type'] === 'empty' ) {
             continue;
         }
-        $zone  = isset( $row['zone'] )  ? trim( $row['zone'] )  : 'GENERAL';
-        $label = isset( $row['label'] ) ? $row['label'] : '';
-        $count = isset( $row['count'] ) ? (int) $row['count'] : 0;
+        $zone = isset( $row['zone'] ) ? trim( $row['zone'] ) : 'GENERAL';
         if ( $zone === '' ) {
             $zone = 'GENERAL';
         }
-        $removed = array();
-        if ( ! empty( $row['removedSeats'] ) && is_array( $row['removedSeats'] ) ) {
-            foreach ( $row['removedSeats'] as $rs ) {
-                $removed[ (int) $rs ] = true;
-            }
-        }
-        for ( $s = 1; $s <= $count; $s++ ) {
-            if ( isset( $removed[ $s ] ) ) {
-                continue;
-            }
-            $seat_id = $label . $s;
+        foreach ( ss_layout_row_seat_ids( $row ) as $seat_id ) {
             $map[ $seat_id ] = $zone;
         }
     }
@@ -5506,29 +5790,15 @@ function ss_get_zone_inventory( int $event_id ): array {
             continue;
         }
         $zone  = isset( $row['zone'] ) ? trim( $row['zone'] ) : 'GENERAL';
-        $label = isset( $row['label'] ) ? $row['label'] : '';
-        $count = isset( $row['count'] ) ? (int) $row['count'] : 0;
         if ( $zone === '' ) {
             $zone = 'GENERAL';
-        }
-
-        // removedSeats son números de asiento dentro de la fila (integers)
-        $removed_nums = array();
-        if ( ! empty( $row['removedSeats'] ) && is_array( $row['removedSeats'] ) ) {
-            foreach ( $row['removedSeats'] as $rs ) {
-                $removed_nums[ (int) $rs ] = true;
-            }
         }
 
         if ( ! isset( $zone_totals[ $zone ] ) ) {
             $zone_totals[ $zone ] = 0;
         }
 
-        for ( $s = 1; $s <= $count; $s++ ) {
-            if ( isset( $removed_nums[ $s ] ) ) {
-                continue;
-            }
-            $seat_id = $label . $s;
+        foreach ( ss_layout_row_seat_ids( $row ) as $seat_id ) {
             $zone_totals[ $zone ]++;
             $seat_to_zone[ $seat_id ] = $zone;
         }
@@ -5895,10 +6165,20 @@ function ss_get_event_seating_stats( int $event_id ): array {
         }
     }
 
+    // C) Reservas (temp_reserved + manual_reserved) — misma fuente que el frontend
+    // (ss_get_zone_inventory), para que "disponible" signifique lo mismo en
+    // ambos lados y no queden sillas bloqueadas mostrándose como libres.
+    $reserved_count = 0;
+    $zone_inv = function_exists( 'ss_get_zone_inventory' ) ? ss_get_zone_inventory( $event_id ) : array();
+    foreach ( $zone_inv as $z ) {
+        $reserved_count += max( 0, (int) ( $z['reserved'] ?? 0 ) );
+    }
+
     $stats['sold']       = $sold_count;
+    $stats['reserved']   = $reserved_count;
     $stats['checked_in'] = $checkedin_count;
-    $stats['available']  = max( 0, $total - $sold_count );
-    $stats['percentage'] = $total > 0 ? (int) round( $sold_count / $total * 100 ) : 0;
+    $stats['available']  = max( 0, $total - $sold_count - $reserved_count );
+    $stats['percentage'] = $total > 0 ? (int) round( ( $sold_count + $reserved_count ) / $total * 100 ) : 0;
 
     return $stats;
 }
@@ -5920,8 +6200,9 @@ function ss_get_event_zone_stats( int $event_id ): array {
     if ( empty( $inventory ) ) { return $stats; }
 
     foreach ( $inventory as $data ) {
-        $stats['total'] += $data['total'];
-        $stats['sold']  += $data['sold'];
+        $stats['total']    += $data['total'];
+        $stats['sold']     += $data['sold'];
+        $stats['reserved']  = ( $stats['reserved'] ?? 0 ) + $data['reserved'];
     }
 
     // Check-in desde pedidos
@@ -5941,8 +6222,8 @@ function ss_get_event_zone_stats( int $event_id ): array {
         }
     }
 
-    $stats['available']  = max( 0, $stats['total'] - $stats['sold'] );
-    $stats['percentage'] = $stats['total'] > 0 ? (int) round( $stats['sold'] / $stats['total'] * 100 ) : 0;
+    $stats['available']  = max( 0, $stats['total'] - $stats['sold'] - $stats['reserved'] );
+    $stats['percentage'] = $stats['total'] > 0 ? (int) round( ( $stats['sold'] + $stats['reserved'] ) / $stats['total'] * 100 ) : 0;
 
     return $stats;
 }
@@ -5966,9 +6247,9 @@ function ss_get_event_combined_stats( int $event_id ): array {
             $zone_sold += $data['sold'];
         }
         $seat_stats['sold']      += max( 0, $zone_sold - $seat_stats['sold'] );
-        $seat_stats['available']  = max( 0, $seat_stats['total'] - $seat_stats['sold'] );
+        $seat_stats['available']  = max( 0, $seat_stats['total'] - $seat_stats['sold'] - ( $seat_stats['reserved'] ?? 0 ) );
         $seat_stats['percentage'] = $seat_stats['total'] > 0
-            ? (int) round( $seat_stats['sold'] / $seat_stats['total'] * 100 ) : 0;
+            ? (int) round( ( $seat_stats['sold'] + ( $seat_stats['reserved'] ?? 0 ) ) / $seat_stats['total'] * 100 ) : 0;
     }
 
     return $seat_stats;
@@ -6071,6 +6352,7 @@ function ss_sold_seats_metabox_render( WP_Post $post ): void {
         }
         .ss-stat--total .ss-stat__num   { color: #2c3e50; }
         .ss-stat--sold .ss-stat__num    { color: #c0392b; }
+        .ss-stat--reserved .ss-stat__num { color: #e67e22; }
         .ss-stat--checkin .ss-stat__num { color: #2980b9; }
         .ss-stat--avail .ss-stat__num   { color: #27ae60; }
         .ss-stat--pct .ss-stat__num     { color: #7f8c8d; }
@@ -6101,6 +6383,10 @@ function ss_sold_seats_metabox_render( WP_Post $post ): void {
             <div class="ss-stat ss-stat--sold">
                 <span class="ss-stat__num"><?php echo esc_html( $stats['sold'] ); ?></span>
                 <span class="ss-stat__label"><?php esc_html_e( 'Vendidos', 'ss-seating' ); ?></span>
+            </div>
+            <div class="ss-stat ss-stat--reserved">
+                <span class="ss-stat__num"><?php echo esc_html( $stats['reserved'] ?? 0 ); ?></span>
+                <span class="ss-stat__label"><?php esc_html_e( 'Reservados', 'ss-seating' ); ?></span>
             </div>
             <div class="ss-stat ss-stat--checkin">
                 <span class="ss-stat__num"><?php echo esc_html( $stats['checked_in'] ); ?></span>
@@ -7282,6 +7568,20 @@ function ss_validate_ticket_ajax(): void {
 
         $checkin_stats = ss_get_checkin_counter( $event_id );
 
+        // Si esta silla viene de un remap (ej. "sillas corridas"), avisarle al
+        // cajero el número viejo — el ticket/QR que tiene la persona en mano
+        // puede seguir diciendo el número anterior.
+        $renamed_note = '';
+        $remap_log    = $order->get_meta( '_ss_seat_remap_log' );
+        if ( is_array( $remap_log ) ) {
+            foreach ( array_reverse( $remap_log ) as $entry ) {
+                if ( ( $entry['new'] ?? '' ) === $seat_id ) {
+                    $renamed_note = 'Este asiento se renumeró: antes era ' . $entry['old'] . ', ahora es ' . $seat_id . '.';
+                    break;
+                }
+            }
+        }
+
         $base = array(
             'order_id'       => $order_id,
             'buyer'          => $buyer,
@@ -7293,6 +7593,7 @@ function ss_validate_ticket_ajax(): void {
             'checkin_count'  => $checkin_stats['checked_in'],
             'total_capacity' => $checkin_stats['total'],
             'is_seat_qr'    => true,
+            'renamed_note'   => $renamed_note,
         );
 
         $result = ss_checkin_mark_seat( $order_id, $seat_id );
@@ -8257,6 +8558,7 @@ function ss_bo_report_csv_export(): void {
             $w_tkt    = $wo->get_meta( 'ss_ticket_qtys' );
             $w_ct     = count( array_filter( $w_seats ) );
             if ( is_array( $w_tkt ) ) { $w_ct += (int) array_sum( $w_tkt ); }
+            $w_attr   = SS_REST_Reports::get_order_attribution( $wo, false );
             $web_orders_csv[] = array(
                 'oid'    => (int) $woid,
                 'nombre' => trim( $wo->get_billing_first_name() . ' ' . $wo->get_billing_last_name() ),
@@ -8268,6 +8570,9 @@ function ss_bo_report_csv_export(): void {
                 'cajero' => 'Web',
                 'evento' => get_the_title( $event_id ),
                 'fecha'  => $wo->get_date_created() ? $wo->get_date_created()->format( 'Y-m-d H:i:s' ) : '',
+                'origen' => $w_attr['origen'],
+                'medio'  => $w_attr['utm_medium'],
+                'campana'=> $w_attr['utm_campaign'],
             );
         }
     }
@@ -8275,7 +8580,7 @@ function ss_bo_report_csv_export(): void {
     $out = fopen( 'php://output', 'w' ); // phpcs:ignore WordPress.WP.AlternativeFunctions
     // BOM UTF-8 para que Excel lo abra correctamente
     fwrite( $out, "\xEF\xBB\xBF" ); // phpcs:ignore WordPress.WP.AlternativeFunctions
-    fputcsv( $out, array( 'Pedido', 'Persona', 'Asientos', 'CT', 'Valor cobrado', 'Método pago', 'Nota', 'Cajero', 'Evento', 'Fecha', 'Fuente' ) );
+    fputcsv( $out, array( 'Pedido', 'Persona', 'Asientos', 'CT', 'Valor cobrado', 'Método pago', 'Nota', 'Cajero', 'Evento', 'Fecha', 'Fuente', 'Origen', 'Medio', 'Campaña' ) );
 
     foreach ( $log_rows as $r ) {
         $oid   = (int) $r['order_id'];
@@ -8287,6 +8592,7 @@ function ss_bo_report_csv_export(): void {
         $valor_cobrado = 0;
         $metodo_pago   = '';
         $nota          = '';
+        $origen        = '';
         $evento        = get_the_title( (int) $r['event_id'] );
 
         if ( $order ) {
@@ -8294,6 +8600,7 @@ function ss_bo_report_csv_export(): void {
             $valor_cobrado = (int) $order->get_meta( '_ss_valor_cobrado' );
             $metodo_pago   = $order->get_payment_method_title();
             $nota          = (string) $order->get_meta( '_ss_nota_bo' );
+            $origen        = SS_REST_Reports::get_order_attribution( $order, true )['origen'];
         }
 
         fputcsv( $out, array(
@@ -8308,6 +8615,9 @@ function ss_bo_report_csv_export(): void {
             $evento,
             $r['created_at'],
             'BO',
+            $origen,
+            '',
+            '',
         ) );
     }
 
@@ -8324,6 +8634,9 @@ function ss_bo_report_csv_export(): void {
             $wr['evento'],
             $wr['fecha'],
             'Web',
+            $wr['origen'],
+            $wr['medio'],
+            $wr['campana'],
         ) );
     }
 
@@ -8387,12 +8700,14 @@ function ss_cierre_contable_page(): void {
         $nota          = '';
         $evento        = get_the_title( (int) $r['event_id'] );
 
+        $origen = '';
         if ( $order ) {
             $nombre        = trim( $order->get_billing_first_name() . ' ' . $order->get_billing_last_name() );
             $valor_cobrado = (int) $order->get_meta( '_ss_valor_cobrado' );
             $metodo_pago   = $order->get_payment_method_title();
             $nota          = (string) $order->get_meta( '_ss_nota_bo' );
             $metodo_key    = str_replace( 'boxoffice_', '', $order->get_payment_method() );
+            $origen        = SS_REST_Reports::get_order_attribution( $order, true )['origen'];
         }
 
         $rows[] = array(
@@ -8407,6 +8722,7 @@ function ss_cierre_contable_page(): void {
             'cajero'       => $r['usuario'],
             'evento'       => $evento,
             'fecha'        => $r['created_at'],
+            'origen'       => $origen,
         );
         $total_ct    += $ct;
         $total_valor += $valor_cobrado;
@@ -8442,14 +8758,18 @@ function ss_cierre_contable_page(): void {
             $w_bruto     = (float) $wo->get_total();
             $w_nombre    = trim( $wo->get_billing_first_name() . ' ' . $wo->get_billing_last_name() );
             $w_fecha     = $wo->get_date_created() ? $wo->get_date_created()->format( 'Y-m-d H:i' ) : '';
+            $w_attr      = SS_REST_Reports::get_order_attribution( $wo, false );
             $web_rows[]  = array(
-                'oid'     => (int) $woid,
-                'nombre'  => $w_nombre,
-                'asientos'=> $w_seats,
-                'ct'      => $w_ct,
-                'bruto'   => $w_bruto,
-                'estado'  => $wo->get_status(),
-                'fecha'   => $w_fecha,
+                'oid'         => (int) $woid,
+                'nombre'      => $w_nombre,
+                'asientos'    => $w_seats,
+                'ct'          => $w_ct,
+                'bruto'       => $w_bruto,
+                'estado'      => $wo->get_status(),
+                'fecha'       => $w_fecha,
+                'origen'      => $w_attr['origen'],
+                'utm_medium'  => $w_attr['utm_medium'],
+                'utm_campaign'=> $w_attr['utm_campaign'],
             );
             $total_web_ct    += $w_ct;
             $total_web_bruto += $w_bruto;
@@ -8515,6 +8835,7 @@ function ss_cierre_contable_page(): void {
                     <th>Nota</th>
                     <th>Cajero</th>
                     <th>Evento</th>
+                    <th>Origen</th>
                     <th>Fecha</th>
                 </tr>
             </thead>
@@ -8530,6 +8851,7 @@ function ss_cierre_contable_page(): void {
                     <td style="color:#9ca3af;font-size:12px"><?php echo esc_html( $row['nota'] ); ?></td>
                     <td><?php echo esc_html( $row['cajero'] ); ?></td>
                     <td><?php echo esc_html( $row['evento'] ); ?></td>
+                    <td><?php echo esc_html( $row['origen'] ?: '—' ); ?></td>
                     <td style="white-space:nowrap;color:#666;font-size:12px"><?php echo esc_html( $row['fecha'] ); ?></td>
                 </tr>
                 <?php endforeach; ?>
@@ -8539,7 +8861,7 @@ function ss_cierre_contable_page(): void {
                     <td colspan="3" style="padding:8px 10px">Totales</td>
                     <td style="text-align:center;padding:8px 10px"><?php echo esc_html( $total_ct ); ?></td>
                     <td style="text-align:right;padding:8px 10px"><?php echo $total_valor ? '$' . number_format( $total_valor, 0, ',', '.' ) : '—'; ?></td>
-                    <td colspan="5"></td>
+                    <td colspan="6"></td>
                 </tr>
             </tfoot>
         </table>
@@ -8577,7 +8899,7 @@ function ss_cierre_contable_page(): void {
                     <th>#Pedido</th><th>Persona</th><th>Asientos</th>
                     <th style="text-align:center">CT</th>
                     <th style="text-align:right">Total WC (bruto)</th>
-                    <th>Estado</th><th>Fecha</th>
+                    <th>Estado</th><th>Origen</th><th>Medio</th><th>Campaña</th><th>Fecha</th>
                 </tr>
             </thead>
             <tbody>
@@ -8589,6 +8911,9 @@ function ss_cierre_contable_page(): void {
                     <td style="text-align:center"><?php echo esc_html( $wr['ct'] ); ?></td>
                     <td style="text-align:right"><strong>$<?php echo number_format( $wr['bruto'], 0, ',', '.' ); ?></strong></td>
                     <td><?php echo esc_html( wc_get_order_status_name( $wr['estado'] ) ); ?></td>
+                    <td><?php echo esc_html( $wr['origen'] ?: '—' ); ?></td>
+                    <td><?php echo esc_html( $wr['utm_medium'] ?: '—' ); ?></td>
+                    <td><?php echo esc_html( $wr['utm_campaign'] ?: '—' ); ?></td>
                     <td style="white-space:nowrap;color:#666;font-size:12px"><?php echo esc_html( $wr['fecha'] ); ?></td>
                 </tr>
                 <?php endforeach; ?>
@@ -8598,7 +8923,7 @@ function ss_cierre_contable_page(): void {
                     <td colspan="3" style="padding:8px 10px">Totales web</td>
                     <td style="text-align:center;padding:8px 10px"><?php echo esc_html( $total_web_ct ); ?></td>
                     <td style="text-align:right;padding:8px 10px">$<?php echo number_format( $total_web_bruto, 0, ',', '.' ); ?></td>
-                    <td colspan="2"></td>
+                    <td colspan="5"></td>
                 </tr>
             </tfoot>
         </table>
