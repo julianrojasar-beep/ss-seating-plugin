@@ -3,7 +3,7 @@
  * Plugin Name: SS Seating
  * Plugin URI: https://tusitio.com
  * Description: Sistema de selección de sillas y venta de boletas con QR para eventos.
- * Version: 1.3.25
+ * Version: 1.3.26
  * Author: Julian Rojas
  * Author URI: https://tusitio.com
  * License: GPL v2 or later
@@ -10139,6 +10139,39 @@ function ss_boxoffice_ajax_get_order(): void {
     ) );
 }
 
+// ── Box Office: aviso por correo de traslado de boleta ────────────────────────
+
+/**
+ * Envía al cliente un correo con el mismo estilo del ticket de confirmación,
+ * avisando que su boleta cambió de evento/silla. Reusa ss_render_ticket_block()
+ * para que el QR y los datos mostrados sean siempre los vigentes del pedido.
+ */
+function ss_boxoffice_send_transfer_email( WC_Order $order, int $src_event_id, array $src_seats, int $dest_event_id, array $dest_seats ): void {
+    $to = $order->get_billing_email();
+    if ( ! $to ) { return; }
+
+    $order_id      = $order->get_id();
+    $src_name      = get_the_title( $src_event_id ) ?: ( 'evento #' . $src_event_id );
+    $dest_name     = get_the_title( $dest_event_id ) ?: ( 'evento #' . $dest_event_id );
+    $seats_changed = $src_seats !== $dest_seats;
+
+    $heading = 'Actualización en tu boleta';
+    $intro   = '<p style="margin:0 0 12px;font-size:14px;line-height:1.5;">'
+        . 'Hola ' . esc_html( $order->get_billing_first_name() ) . ', tu boleta del pedido #' . esc_html( $order_id )
+        . ' fue trasladada de <strong>' . esc_html( $src_name ) . '</strong> a <strong>' . esc_html( $dest_name ) . '</strong>'
+        . ( $seats_changed ? ( ', asignándote ' . ( count( $dest_seats ) > 1 ? 'las sillas' : 'la silla' ) . ' <strong>' . esc_html( implode( ', ', $dest_seats ) ) . '</strong>.' ) : '.' )
+        . ' El código QR que debes presentar en la entrada es el que aparece abajo (los anteriores ya no son válidos).'
+        . '</p>';
+
+    $ticket_html = ss_render_ticket_block( $order_id );
+    $content     = $intro . $ticket_html;
+
+    $mailer  = WC()->mailer();
+    $message = $mailer->wrap_message( $heading, $content );
+
+    $mailer->send( $to, $heading . ' · Pedido #' . $order_id, $message, "Content-Type: text/html\r\n", array() );
+}
+
 // ── Box Office: trasladar boletas a otro evento ───────────────────────────────
 add_action( 'wp_ajax_ss_boxoffice_transfer',       'ss_boxoffice_ajax_transfer' );
 add_action( 'wp_ajax_nopriv_ss_boxoffice_transfer', 'ss_boxoffice_ajax_transfer' );
@@ -10215,10 +10248,12 @@ function ss_boxoffice_ajax_transfer(): void {
     // 4. Actualizar metas del pedido
     $order->update_meta_data( 'ss_event_id', $dest_event_id );
     $order->update_meta_data( 'ss_seats',    $dest_seats );
-    // Invalidar QRs individuales si las sillas cambian
-    $src_sorted  = $src_seats;  sort( $src_sorted );
-    $dest_sorted = $dest_seats; sort( $dest_sorted );
-    if ( $src_sorted !== $dest_sorted ) {
+    // Invalidar y regenerar QRs individuales si las sillas cambian
+    $src_sorted        = $src_seats;  sort( $src_sorted );
+    $dest_sorted       = $dest_seats; sort( $dest_sorted );
+    $seats_changed     = $src_sorted !== $dest_sorted;
+    $had_seat_tokens   = ! empty( $order->get_meta( '_ss_seat_tokens' ) );
+    if ( $seats_changed ) {
         $order->delete_meta_data( '_ss_seat_tokens' );
     }
     // Actualizar item metas
@@ -10237,6 +10272,14 @@ function ss_boxoffice_ajax_transfer(): void {
     ) );
     $order->save();
 
+    // 4b. Regenerar QRs individuales por silla si el pedido los tenía y las sillas cambiaron
+    if ( $seats_changed && $had_seat_tokens && count( $dest_seats ) > 1 ) {
+        ss_generate_seat_qrs( $order_id, $dest_seats );
+    }
+
+    // 4c. Avisar al cliente por correo (el evento destino siempre difiere del origen)
+    ss_boxoffice_send_transfer_email( $order, $src_event_id, $src_seats, $dest_event_id, $dest_seats );
+
     // 5. Actualizar redeemed_events de fidelización si el pedido tuvo descuento loyalty
     $loyalty_pct = (int) $order->get_meta( '_ss_loyalty_discount_pct' );
     if ( $loyalty_pct > 0 && class_exists( 'SS_Loyalty' ) ) {
@@ -10250,7 +10293,23 @@ function ss_boxoffice_ajax_transfer(): void {
         SS_Loyalty::upsert( $email, array( 'redeemed_events' => wp_json_encode( $redeemed ) ) );
     }
 
-    // 6. Log + purge
+    // 6. Reasignar registros de venta BO existentes (Cierre Contable) al evento destino,
+    // si no se hace esto el pedido sigue contando como venta del evento origen para siempre.
+    $wpdb->update(
+        $wpdb->prefix . 'ss_boxoffice_log',
+        array(
+            'event_id' => $dest_event_id,
+            'asientos' => implode( ', ', array_map( 'sanitize_text_field', $dest_seats ) ),
+        ),
+        array(
+            'order_id' => $order_id,
+            'event_id' => $src_event_id,
+        ),
+        array( '%d', '%s' ),
+        array( '%d', '%d' )
+    );
+
+    // 7. Log + purge
     ss_boxoffice_log( $dest_event_id, $user, 'traslado desde evento #' . $src_event_id, $dest_seats, $order_id );
     ss_litespeed_purge_event( $src_event_id );
     ss_litespeed_purge_event( $dest_event_id );
