@@ -3,7 +3,7 @@
  * Plugin Name: SS Seating
  * Plugin URI: https://tusitio.com
  * Description: Sistema de selección de sillas y venta de boletas con QR para eventos.
- * Version: 1.3.26
+ * Version: 1.3.27
  * Author: Julian Rojas
  * Author URI: https://tusitio.com
  * License: GPL v2 or later
@@ -10148,7 +10148,10 @@ function ss_boxoffice_ajax_get_order(): void {
  */
 function ss_boxoffice_send_transfer_email( WC_Order $order, int $src_event_id, array $src_seats, int $dest_event_id, array $dest_seats ): void {
     $to = $order->get_billing_email();
-    if ( ! $to ) { return; }
+    if ( ! $to ) {
+        $order->add_order_note( 'Aviso de traslado NO enviado: el pedido no tiene correo de facturación.' );
+        return;
+    }
 
     $order_id      = $order->get_id();
     $src_name      = get_the_title( $src_event_id ) ?: ( 'evento #' . $src_event_id );
@@ -10169,7 +10172,12 @@ function ss_boxoffice_send_transfer_email( WC_Order $order, int $src_event_id, a
     $mailer  = WC()->mailer();
     $message = $mailer->wrap_message( $heading, $content );
 
-    $mailer->send( $to, $heading . ' · Pedido #' . $order_id, $message, "Content-Type: text/html\r\n", array() );
+    $sent = $mailer->send( $to, $heading . ' · Pedido #' . $order_id, $message, "Content-Type: text/html\r\n", array() );
+
+    $order->add_order_note( $sent
+        ? sprintf( 'Aviso de traslado enviado a %s.', esc_html( $to ) )
+        : sprintf( 'Aviso de traslado FALLÓ al enviar a %s (revisar configuración de correo del sitio).', esc_html( $to ) )
+    );
 }
 
 // ── Box Office: trasladar boletas a otro evento ───────────────────────────────
@@ -10195,8 +10203,13 @@ function ss_boxoffice_ajax_transfer(): void {
     if ( ! $order ) { wp_send_json_error( 'Pedido no encontrado' ); }
 
     // Leer evento y sillas origen desde la orden
+    // (array) sobre un meta inexistente da ['' ] — no vacío para empty(), por eso se filtra explícitamente.
+    $clean_seats = static function ( $raw ): array {
+        return array_values( array_filter( array_map( 'trim', (array) $raw ), static fn( $s ) => $s !== '' ) );
+    };
+
     $src_event_id = (int) $order->get_meta( 'ss_event_id' );
-    $src_seats    = (array) $order->get_meta( 'ss_seats' );
+    $src_seats    = $clean_seats( $order->get_meta( 'ss_seats' ) );
     if ( ! $src_event_id ) {
         foreach ( $order->get_items() as $item ) {
             $eid = (int) $item->get_meta( 'ss_event_id' );
@@ -10205,8 +10218,8 @@ function ss_boxoffice_ajax_transfer(): void {
     }
     if ( empty( $src_seats ) ) {
         foreach ( $order->get_items() as $item ) {
-            $s = $item->get_meta( 'ss_seats' );
-            if ( ! empty( $s ) ) { $src_seats = (array) $s; break; }
+            $s = $clean_seats( $item->get_meta( 'ss_seats' ) );
+            if ( ! empty( $s ) ) { $src_seats = $s; break; }
         }
     }
     if ( ! $src_event_id || empty( $src_seats ) ) {
