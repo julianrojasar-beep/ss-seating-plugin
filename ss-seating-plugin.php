@@ -3,7 +3,7 @@
  * Plugin Name: SS Seating
  * Plugin URI: https://tusitio.com
  * Description: Sistema de selección de sillas y venta de boletas con QR para eventos.
- * Version: 1.3.27
+ * Version: 1.3.28
  * Author: Julian Rojas
  * Author URI: https://tusitio.com
  * License: GPL v2 or later
@@ -10099,18 +10099,12 @@ function ss_boxoffice_ajax_get_order(): void {
             if ( $eid ) { $event_id = $eid; break; }
         }
     }
-    $seats = (array) $order->get_meta( 'ss_seats' );
-    if ( empty( $seats ) ) {
-        foreach ( $order->get_items() as $item ) {
-            $s = $item->get_meta( 'ss_seats' );
-            if ( ! empty( $s ) ) { $seats = (array) $s; break; }
-        }
-    }
+    $seats = ss_seats_get_from_order( $order_id );
 
     $event_title = $event_id ? get_the_title( $event_id ) : '';
 
-    // Obtener lista de todos los eventos del mismo producto para el dropdown de traslado
-    // Buscar todos los eventos disponibles como destino de traslado
+    // Obtener lista de eventos para el dropdown de traslado. Se incluye el propio
+    // evento del pedido (marcado aparte) para poder corregir sillas sin cambiar de evento.
     $sibling_events = array();
     $all_events = get_posts( array(
         'post_type'      => 'ss_event',
@@ -10120,7 +10114,13 @@ function ss_boxoffice_ajax_get_order(): void {
         'order'          => 'ASC',
     ) );
     foreach ( $all_events as $ev ) {
-        if ( (int) $ev->ID === $event_id ) { continue; } // excluir evento del pedido
+        if ( (int) $ev->ID === $event_id ) {
+            $sibling_events[] = array(
+                'id'    => $ev->ID,
+                'title' => $ev->post_title . ' (mismo evento — corregir silla)',
+            );
+            continue;
+        }
         $sibling_events[] = array(
             'id'    => $ev->ID,
             'title' => $ev->post_title,
@@ -10202,40 +10202,32 @@ function ss_boxoffice_ajax_transfer(): void {
     $order = wc_get_order( $order_id );
     if ( ! $order ) { wp_send_json_error( 'Pedido no encontrado' ); }
 
-    // Leer evento y sillas origen desde la orden
-    // (array) sobre un meta inexistente da ['' ] — no vacío para empty(), por eso se filtra explícitamente.
-    $clean_seats = static function ( $raw ): array {
-        return array_values( array_filter( array_map( 'trim', (array) $raw ), static fn( $s ) => $s !== '' ) );
-    };
-
+    // Leer evento y sillas origen desde la orden (fuente ya vetada, evita el gotcha
+    // de (array) sobre un meta inexistente que da [''] y engaña a empty()).
     $src_event_id = (int) $order->get_meta( 'ss_event_id' );
-    $src_seats    = $clean_seats( $order->get_meta( 'ss_seats' ) );
+    $src_seats    = ss_seats_get_from_order( $order_id );
     if ( ! $src_event_id ) {
         foreach ( $order->get_items() as $item ) {
             $eid = (int) $item->get_meta( 'ss_event_id' );
             if ( $eid ) { $src_event_id = $eid; break; }
         }
     }
-    if ( empty( $src_seats ) ) {
-        foreach ( $order->get_items() as $item ) {
-            $s = $clean_seats( $item->get_meta( 'ss_seats' ) );
-            if ( ! empty( $s ) ) { $src_seats = $s; break; }
-        }
-    }
     if ( ! $src_event_id || empty( $src_seats ) ) {
         wp_send_json_error( 'El pedido no tiene datos de evento/sillas' );
     }
-    if ( $src_event_id === $dest_event_id ) {
-        wp_send_json_error( 'El evento destino es el mismo que el origen' );
-    }
+    $same_event = $src_event_id === $dest_event_id;
 
-    // 1. Verificar que las sillas destino están libres
+    // 1. Verificar que las sillas destino están libres (si es el mismo evento, las que
+    // ya ocupa este pedido no cuentan como "ocupadas" para sí mismo).
     $sold_dest     = ss_seats_read( $dest_event_id );
     $reserved_dest = ss_seats_get_reserved( $dest_event_id );
     $manual_dest   = ss_seats_get_manual_reserved( $dest_event_id );
-    $blocked       = array_intersect( $dest_seats, array_merge( $sold_dest, $reserved_dest, $manual_dest ) );
+    $others_dest   = $same_event
+        ? array_values( array_diff( array_merge( $sold_dest, $reserved_dest, $manual_dest ), $src_seats ) )
+        : array_merge( $sold_dest, $reserved_dest, $manual_dest );
+    $blocked       = array_intersect( $dest_seats, $others_dest );
     if ( ! empty( $blocked ) ) {
-        wp_send_json_error( 'Sillas no disponibles en destino: ' . implode( ', ', $blocked ) );
+        wp_send_json_error( 'Sillas no disponibles: ' . implode( ', ', $blocked ) );
     }
 
     $table = $wpdb->prefix . 'ss_seat_ledger';
@@ -10275,14 +10267,16 @@ function ss_boxoffice_ajax_transfer(): void {
         $item->update_meta_data( 'ss_seats',    $dest_seats );
         $item->save();
     }
-    $order->add_order_note( sprintf(
-        'Traslado por %s: de evento #%d [%s] → evento #%d [%s]',
-        esc_html( $user ),
-        $src_event_id,
-        implode( ', ', $src_seats ),
-        $dest_event_id,
-        implode( ', ', $dest_seats )
-    ) );
+    $order->add_order_note( $same_event
+        ? sprintf(
+            'Corrección de sillas por %s en evento #%d: [%s] → [%s]',
+            esc_html( $user ), $src_event_id, implode( ', ', $src_seats ), implode( ', ', $dest_seats )
+        )
+        : sprintf(
+            'Traslado por %s: de evento #%d [%s] → evento #%d [%s]',
+            esc_html( $user ), $src_event_id, implode( ', ', $src_seats ), $dest_event_id, implode( ', ', $dest_seats )
+        )
+    );
     $order->save();
 
     // 4b. Regenerar QRs individuales por silla si el pedido los tenía y las sillas cambiaron
@@ -10290,8 +10284,11 @@ function ss_boxoffice_ajax_transfer(): void {
         ss_generate_seat_qrs( $order_id, $dest_seats );
     }
 
-    // 4c. Avisar al cliente por correo (el evento destino siempre difiere del origen)
-    ss_boxoffice_send_transfer_email( $order, $src_event_id, $src_seats, $dest_event_id, $dest_seats );
+    // 4c. Avisar al cliente por correo solo si cambió de evento de verdad.
+    // Una corrección de silla dentro del mismo evento es un ajuste interno, no amerita aviso.
+    if ( ! $same_event ) {
+        ss_boxoffice_send_transfer_email( $order, $src_event_id, $src_seats, $dest_event_id, $dest_seats );
+    }
 
     // 5. Actualizar redeemed_events de fidelización si el pedido tuvo descuento loyalty
     $loyalty_pct = (int) $order->get_meta( '_ss_loyalty_discount_pct' );
@@ -10323,17 +10320,27 @@ function ss_boxoffice_ajax_transfer(): void {
     );
 
     // 7. Log + purge
-    ss_boxoffice_log( $dest_event_id, $user, 'traslado desde evento #' . $src_event_id, $dest_seats, $order_id );
+    ss_boxoffice_log(
+        $dest_event_id,
+        $user,
+        $same_event ? 'corrección de sillas' : ( 'traslado desde evento #' . $src_event_id ),
+        $dest_seats,
+        $order_id
+    );
     ss_litespeed_purge_event( $src_event_id );
-    ss_litespeed_purge_event( $dest_event_id );
+    if ( ! $same_event ) {
+        ss_litespeed_purge_event( $dest_event_id );
+    }
 
     wp_send_json_success( array(
-        'message' => sprintf(
-            'Pedido #%d trasladado al evento "%s" (sillas: %s)',
-            $order_id,
-            get_the_title( $dest_event_id ),
-            implode( ', ', $dest_seats )
-        ),
+        'message' => $same_event
+            ? sprintf( 'Pedido #%d corregido: sillas ahora %s', $order_id, implode( ', ', $dest_seats ) )
+            : sprintf(
+                'Pedido #%d trasladado al evento "%s" (sillas: %s)',
+                $order_id,
+                get_the_title( $dest_event_id ),
+                implode( ', ', $dest_seats )
+            ),
     ) );
 }
 
