@@ -322,6 +322,8 @@ class SS_Event_Admin {
         if ( ! is_array( $ticket_types ) ) {
             $ticket_types = array();
         }
+        $sync_nonce = wp_create_nonce( 'ss_get_map_zones' );
+        $sale_mode  = SS_Event_Service::instance()->get_sale_mode( $post->ID );
         ?>
         <div class="ss-admin-tabs__panel" data-tab="tickets">
             <p class="description" style="margin-bottom:12px;">
@@ -373,6 +375,14 @@ class SS_Event_Admin {
             <button type="button" class="button" id="ss-ticket-add" style="margin-top:8px;">
                 + Agregar tipo de boleta
             </button>
+            <button type="button" class="button button-secondary" id="ss-ticket-sync-map"
+                    style="margin-top:8px;margin-left:8px;"
+                    data-nonce="<?php echo esc_attr( $sync_nonce ); ?>"
+                    data-post-id="<?php echo (int) $post->ID; ?>"
+                    data-sale-mode="<?php echo esc_attr( $sale_mode ); ?>">
+                Sincronizar con el mapa
+            </button>
+            <span id="ss-ticket-sync-result" class="description" style="margin-left:8px;"></span>
         </div>
         <?php
     }

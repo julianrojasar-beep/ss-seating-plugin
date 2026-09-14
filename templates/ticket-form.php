@@ -59,6 +59,17 @@ $has_map = $layout && in_array( $sale_mode, array( 'seat', 'hybrid', 'general' )
 // Inventario real por zona (sold + reserved descontados)
 $zone_inventory = function_exists( 'ss_get_zone_inventory' ) ? ss_get_zone_inventory( $event_id ) : array();
 
+// Índice case-insensitive: el nombre de zona en _ss_ticket_types puede tener
+// mayúsculas/minúsculas distintas al del mapa (ej. "General" en el mapa vs
+// "GENERAL" en Tickets) — sin esto, la búsqueda directa/uppercase de abajo
+// falla en esa combinación y cae al fallback (capacidad completa sin
+// descontar ventas), aunque el % vendido general (que no depende de este
+// match) siga siendo correcto.
+$zone_inventory_ci = array();
+foreach ( $zone_inventory as $inv_key => $inv_row ) {
+    $zone_inventory_ci[ mb_strtoupper( trim( $inv_key ) ) ] = $inv_row;
+}
+
 // Preventa: ¿aplica ahora mismo?
 $is_presale = class_exists( 'SS_Event_Service' ) ? SS_Event_Service::instance()->is_presale_active( $event_id ) : false;
 
@@ -79,7 +90,7 @@ if ( $is_presale ) {
 // Enriquecer ticket_types con disponibilidad real y precio efectivo (preventa/normal)
 foreach ( $ticket_types as &$tt ) {
     $zone_key = $tt['zone'];
-    $inv = $zone_inventory[ $zone_key ] ?? ( $zone_inventory[ strtoupper( $zone_key ) ] ?? null );
+    $inv = $zone_inventory_ci[ mb_strtoupper( trim( $zone_key ) ) ] ?? null;
     if ( $inv ) {
         $tt['available'] = $inv['available'];
         $tt['total']     = $inv['total'];

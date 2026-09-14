@@ -189,15 +189,26 @@ class SS_REST_Reports {
      * cuando WC no tiene el dato. Ver CLAUDE.md, "Atribución de Meta Ads".
      * Reutilizado por el reporte REST y por el Cierre Contable.
      *
-     * @return array { origen, utm_medium, utm_campaign, fbclid }
+     * @return array { origen, utm_medium, utm_campaign, fbclid, device_type, referrer }
      */
     public static function get_order_attribution( \WC_Order $order, bool $is_bo ): array {
         if ( $is_bo ) {
+            $origen = (string) $order->get_meta( '_ss_bo_sale_origin' );
+            // "Otro" es un valor de catálogo interno; para reportes se muestra el
+            // detalle libre que escribió el cajero en vez del literal "otro".
+            if ( $origen === 'otro' ) {
+                $detalle = (string) $order->get_meta( '_ss_bo_sale_origin_detail' );
+                if ( $detalle !== '' ) {
+                    $origen = $detalle;
+                }
+            }
             return array(
-                'origen'       => (string) $order->get_meta( '_ss_bo_sale_origin' ),
+                'origen'       => $origen,
                 'utm_medium'   => '',
                 'utm_campaign' => '',
                 'fbclid'       => '',
+                'device_type'  => '',
+                'referrer'     => '',
             );
         }
 
@@ -219,6 +230,9 @@ class SS_REST_Reports {
             'utm_medium'   => $utm_medium,
             'utm_campaign' => $utm_campaign,
             'fbclid'       => (string) $order->get_meta( '_ss_fbclid' ),
+            // Campos nativos de WC Order Attribution, no leídos hasta ahora en el plugin.
+            'device_type'  => (string) $order->get_meta( '_wc_order_attribution_device_type' ),
+            'referrer'     => (string) $order->get_meta( '_wc_order_attribution_referrer' ),
         );
     }
 
@@ -249,6 +263,7 @@ class SS_REST_Reports {
         $transacciones   = array();
         $ingresos_web    = 0.0;
         $ingresos_bo     = 0.0;
+        $serie_diaria    = array();
 
         foreach ( $order_event_map as $order_id => $mapped_event_id ) {
             $order = wc_get_order( $order_id );
@@ -263,6 +278,8 @@ class SS_REST_Reports {
             $utm_medium   = $attribution['utm_medium'];
             $utm_campaign = $attribution['utm_campaign'];
             $fbclid       = $attribution['fbclid'];
+            $device_type  = $attribution['device_type'];
+            $referrer     = $attribution['referrer'];
 
             $zonas_orden = array();
             $boletas_orden = 0;
@@ -309,6 +326,8 @@ class SS_REST_Reports {
                 $cliente = $order->get_billing_email();
             }
 
+            $fecha_creacion = $order->get_date_created();
+
             $transacciones[] = array(
                 'order_id'      => $order_id,
                 'canal'         => $is_bo ? 'bo' : 'web',
@@ -318,12 +337,38 @@ class SS_REST_Reports {
                 'utm_medium'    => $utm_medium,
                 'utm_campaign'  => $utm_campaign,
                 'fbclid'        => $fbclid,
+                'device_type'   => $device_type,
+                'referrer'      => $referrer,
                 'boletas'       => $boletas_orden,
                 'zonas'         => array_values( array_unique( array_filter( $zonas_orden ) ) ),
                 'valor'         => $valor,
-                'fecha'         => $order->get_date_created() ? $order->get_date_created()->format( 'c' ) : '',
+                'fecha'         => $fecha_creacion ? $fecha_creacion->format( 'c' ) : '',
             );
+
+            if ( $fecha_creacion ) {
+                $dia = $fecha_creacion->format( 'Y-m-d' );
+                if ( ! isset( $serie_diaria[ $dia ] ) ) {
+                    $serie_diaria[ $dia ] = array(
+                        'fecha'   => $dia,
+                        'ingresos_web' => 0.0,
+                        'ingresos_bo'  => 0.0,
+                        'boletas' => 0,
+                    );
+                }
+                if ( $is_bo ) {
+                    $serie_diaria[ $dia ]['ingresos_bo'] += $valor;
+                } else {
+                    $serie_diaria[ $dia ]['ingresos_web'] += $valor;
+                }
+                $serie_diaria[ $dia ]['boletas'] += $boletas_orden;
+            }
         }
+
+        ksort( $serie_diaria );
+        foreach ( $serie_diaria as &$dia_row ) {
+            $dia_row['ingresos_total'] = $dia_row['ingresos_web'] + $dia_row['ingresos_bo'];
+        }
+        unset( $dia_row );
 
         $ocupacion = array();
         foreach ( $ticket_types as $tt ) {
@@ -345,6 +390,7 @@ class SS_REST_Reports {
                 'total' => $ingresos_web + $ingresos_bo,
             ),
             'transacciones' => $transacciones,
+            'serie_diaria'  => array_values( $serie_diaria ),
         ), 200 );
     }
 }

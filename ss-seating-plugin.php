@@ -3,7 +3,7 @@
  * Plugin Name: SS Seating
  * Plugin URI: https://tusitio.com
  * Description: Sistema de selección de sillas y venta de boletas con QR para eventos.
- * Version: 1.3.28
+ * Version: 1.3.29
  * Author: Julian Rojas
  * Author URI: https://tusitio.com
  * License: GPL v2 or later
@@ -910,7 +910,44 @@ function ss_sync_zones_to_ticket_types_on_save($post_id, $post) {
     if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) return;
     if (!$post || $post->post_type !== 'ss_event') return;
     if (!current_user_can('edit_post', $post_id)) return;
-    ss_sync_zones_to_ticket_types($post_id);
+    $result = ss_sync_zones_to_ticket_types($post_id);
+    if (!empty($result['new_zones'])) {
+        set_transient('ss_new_zones_notice_' . $post_id, $result['new_zones'], 60);
+    }
+    if (!empty($result['orphan_zones'])) {
+        set_transient('ss_orphan_zones_notice_' . $post_id, $result['orphan_zones'], 60);
+    }
+}
+
+add_action('admin_notices', 'ss_render_zone_sync_notice');
+function ss_render_zone_sync_notice() {
+    $screen = get_current_screen();
+    if (!$screen || $screen->post_type !== 'ss_event') return;
+    $post_id = isset($_GET['post']) ? (int) $_GET['post'] : 0;
+    if (!$post_id) return;
+
+    $new_zones = get_transient('ss_new_zones_notice_' . $post_id);
+    if ($new_zones) delete_transient('ss_new_zones_notice_' . $post_id);
+    $orphan_zones = get_transient('ss_orphan_zones_notice_' . $post_id);
+    if ($orphan_zones) delete_transient('ss_orphan_zones_notice_' . $post_id);
+
+    if (empty($new_zones) && empty($orphan_zones)) return;
+
+    echo '<div class="notice notice-warning is-dismissible"><p>';
+    if (!empty($new_zones)) {
+        printf(
+            '<strong>Zonas nuevas sin precio:</strong> %s. Se agregaron a la pestaña Tickets con precio $0 — revisa antes de vender.',
+            esc_html(implode(', ', $new_zones))
+        );
+    }
+    if (!empty($orphan_zones)) {
+        if (!empty($new_zones)) echo '<br>';
+        printf(
+            '<strong>Zonas en Tickets sin zona correspondiente en el mapa:</strong> %s. Revisa si deben eliminarse.',
+            esc_html(implode(', ', $orphan_zones))
+        );
+    }
+    echo '</p></div>';
 }
 
 /**
@@ -985,18 +1022,18 @@ function ss_sync_zones_to_ticket_types($post_id) {
     // En modo "sin mapa" la capacidad es manual (campo Tickets); no debe
     // sobrescribirse con el conteo de sillas de un layout que no se usa para vender.
     if ( SS_Event_Service::instance()->get_sale_mode( $post_id ) === 'no_map' ) {
-        return;
+        return array( 'new_zones' => array(), 'orphan_zones' => array() );
     }
 
     $layout_raw = SS_Event_Service::instance()->get_layout_raw($post_id);
     if (empty($layout_raw)) {
-        return;
+        return array( 'new_zones' => array(), 'orphan_zones' => array() );
     }
 
     $layout = json_decode($layout_raw, true);
     $rows = ss_layout_get_rows( $layout ?: array() );
     if (!is_array($layout) || empty($rows)) {
-        return;
+        return array( 'new_zones' => array(), 'orphan_zones' => array() );
     }
 
     // 2) Count seats per zone
@@ -1036,7 +1073,7 @@ function ss_sync_zones_to_ticket_types($post_id) {
     }
 
     if (empty($zone_counts)) {
-        return;
+        return array( 'new_zones' => array(), 'orphan_zones' => array() );
     }
 
     // 3) Update _ss_ticket_types: [{zone, price, capacity}]
@@ -1053,8 +1090,11 @@ function ss_sync_zones_to_ticket_types($post_id) {
         }
     }
 
+    $map_keys  = array();
+    $new_zones = array();
     foreach ( $zone_counts as $zone_name => $count ) {
         $key = mb_strtoupper( trim( $zone_name ) );
+        $map_keys[ $key ] = true;
         if ( isset( $name_index[ $key ] ) ) {
             $existing[ $name_index[ $key ] ]['capacity'] = $count;
         } else {
@@ -1063,10 +1103,23 @@ function ss_sync_zones_to_ticket_types($post_id) {
                 'price'    => 0,
                 'capacity' => $count,
             );
+            $new_zones[] = $zone_name;
+        }
+    }
+
+    // Zonas que ya existían en Tickets pero ya no están en el mapa actual.
+    $orphan_zones = array();
+    foreach ( $existing as $tt ) {
+        $name = isset( $tt['zone'] ) ? trim( $tt['zone'] ) : '';
+        if ( $name === '' ) continue;
+        if ( ! isset( $map_keys[ mb_strtoupper( $name ) ] ) ) {
+            $orphan_zones[] = $name;
         }
     }
 
     update_post_meta( $post_id, '_ss_ticket_types', array_values( $existing ) );
+
+    return array( 'new_zones' => $new_zones, 'orphan_zones' => $orphan_zones );
 }
 
 add_shortcode('ss_seating', 'ss_seating_shortcode');
@@ -1602,13 +1655,17 @@ function ss_ajax_add_to_cart(): void {
             }
         }
 
-        // Validar disponibilidad real por zona
-        $zone_inventory = ss_get_zone_inventory( $event_id );
+        // Validar disponibilidad real por zona (match case-insensitive: el nombre
+        // de zona puede diferir en mayúsculas entre el mapa y Tickets).
+        $zone_inventory    = ss_get_zone_inventory( $event_id );
+        $zone_inventory_ci = array();
+        foreach ( $zone_inventory as $inv_key => $inv_row ) {
+            $zone_inventory_ci[ mb_strtoupper( trim( $inv_key ) ) ] = $inv_row;
+        }
         foreach ( $zone_qtys as $zone => $qty ) {
             $qty  = (int) $qty;
             if ( $qty <= 0 ) { continue; }
-            $zkey = strtoupper( sanitize_text_field( $zone ) );
-            $inv  = $zone_inventory[ $zkey ] ?? ( $zone_inventory[ sanitize_text_field( $zone ) ] ?? null );
+            $inv  = $zone_inventory_ci[ mb_strtoupper( trim( sanitize_text_field( $zone ) ) ) ] ?? null;
             $avail = $inv ? (int) $inv['available'] : 0;
             if ( $qty > $avail ) {
                 wp_send_json_error( array(
@@ -6983,19 +7040,29 @@ function ss_seating_stats_page(): void {
             $att_bar        = '<span style="color:#00a32a;">' . str_repeat( '█', $att_bar_filled ) . '</span>'
                             . '<span style="color:#ddd;">' . str_repeat( '░', $att_bar_empty ) . '</span>';
 
-            // Ventas por día (created_at UTC → hora local WP)
-            $utc_offset_sec = (int) ( get_option( 'gmt_offset', 0 ) * 3600 );
-            $utc_offset_sql = sprintf( '%+d', $utc_offset_sec ) . ' SECOND';
-            $sales_by_day = $wpdb->get_results(
-                $wpdb->prepare(
-                    "SELECT DATE(created_at + INTERVAL {$utc_offset_sql}) AS day, COUNT(*) AS qty
-                     FROM {$ledger_table}
-                     WHERE event_id = %d AND status = 'sold'
-                     GROUP BY DATE(created_at + INTERVAL {$utc_offset_sql})
-                     ORDER BY day DESC",
-                    $eid
-                )
-            );
+            // Curva de venta + origen: reutiliza SS_REST_Reports::get_sales_report()
+            // (misma fuente que el endpoint del dashboard externo) en vez de leer
+            // solo el ledger de sillas — así cubre también zonas sin silla
+            // (modos general/hybrid/no_map) y separa Web de Box Office.
+            $report_request  = new WP_REST_Request( 'GET', '/ss-seating/v1/reports/sales' );
+            $report_request->set_param( 'event_id', $eid );
+            $report_response = SS_REST_Reports::get_sales_report( $report_request );
+            $report_data     = $report_response->get_data();
+            $serie_diaria    = $report_data['serie_diaria'] ?? array();
+            $transacciones   = $report_data['transacciones'] ?? array();
+
+            // Desglose por origen de venta (Web + BO)
+            $origen_stats = array();
+            foreach ( $transacciones as $t ) {
+                $o = $t['origen'] !== '' ? $t['origen'] : 'Sin especificar';
+                if ( ! isset( $origen_stats[ $o ] ) ) {
+                    $origen_stats[ $o ] = array( 'origen' => $o, 'boletas' => 0, 'ingresos' => 0.0, 'ordenes' => 0 );
+                }
+                $origen_stats[ $o ]['boletas']  += (int) $t['boletas'];
+                $origen_stats[ $o ]['ingresos'] += (float) $t['valor'];
+                $origen_stats[ $o ]['ordenes']  += 1;
+            }
+            uasort( $origen_stats, function ( $a, $b ) { return $b['ingresos'] <=> $a['ingresos']; } );
 
             // Compradores: reusar $ledger_rows (misma query, ya ejecutada arriba)
             $buyers = $ledger_rows;
@@ -7111,24 +7178,88 @@ function ss_seating_stats_page(): void {
             </div>
         </div>
 
-        <!-- Ventas por día -->
+        <!-- Curva de venta -->
         <div class="ss-stats-section">
-            <h3>Ventas por día</h3>
-            <?php if ( empty( $sales_by_day ) ) : ?>
-                <p style="color:#888;">Sin ventas registradas en el ledger.</p>
+            <h3>Curva de venta (ingresos por día)</h3>
+            <?php if ( empty( $serie_diaria ) ) : ?>
+                <p style="color:#888;">Sin ventas registradas para este evento.</p>
+            <?php else :
+                $chart_w  = 900;
+                $chart_h  = 220;
+                $bar_gap  = 6;
+                $n        = count( $serie_diaria );
+                $bar_w    = max( 4, ( $chart_w - ( $n - 1 ) * $bar_gap ) / $n );
+                $max_val  = 1;
+                foreach ( $serie_diaria as $d ) {
+                    $max_val = max( $max_val, (float) $d['ingresos_total'] );
+                }
+                $label_step = max( 1, (int) ceil( $n / 12 ) ); // evitar amontonar etiquetas
+            ?>
+                <div style="display:flex;gap:16px;margin-bottom:10px;font-size:12px;color:#555;">
+                    <span><span style="display:inline-block;width:10px;height:10px;background:#2271b1;border-radius:2px;margin-right:4px;"></span>Web</span>
+                    <span><span style="display:inline-block;width:10px;height:10px;background:#00a32a;border-radius:2px;margin-right:4px;"></span>Box Office</span>
+                </div>
+                <svg viewBox="0 0 <?php echo (int) $chart_w; ?> <?php echo (int) ( $chart_h + 24 ); ?>" style="width:100%;max-width:<?php echo (int) $chart_w; ?>px;height:auto;">
+                    <?php
+                    $x = 0;
+                    foreach ( $serie_diaria as $i => $d ) {
+                        $web = (float) $d['ingresos_web'];
+                        $bo  = (float) $d['ingresos_bo'];
+                        $h_web   = $chart_h * ( $web / $max_val );
+                        $h_bo    = $chart_h * ( $bo / $max_val );
+                        $y_web   = $chart_h - $h_web;
+                        $y_bo    = $y_web - $h_bo;
+                        $fecha_fmt = esc_html( date_i18n( 'j M', strtotime( $d['fecha'] ) ) );
+                        $tooltip   = sprintf(
+                            '%s — Web: $%s · BO: $%s · %d boleta(s)',
+                            $fecha_fmt,
+                            number_format( $web, 0, ',', '.' ),
+                            number_format( $bo, 0, ',', '.' ),
+                            (int) $d['boletas']
+                        );
+                        ?>
+                        <g>
+                            <title><?php echo esc_html( $tooltip ); ?></title>
+                            <?php if ( $h_web > 0 ) : ?>
+                            <rect x="<?php echo esc_attr( $x ); ?>" y="<?php echo esc_attr( $y_web ); ?>" width="<?php echo esc_attr( $bar_w ); ?>" height="<?php echo esc_attr( $h_web ); ?>" fill="#2271b1"></rect>
+                            <?php endif; ?>
+                            <?php if ( $h_bo > 0 ) : ?>
+                            <rect x="<?php echo esc_attr( $x ); ?>" y="<?php echo esc_attr( $y_bo ); ?>" width="<?php echo esc_attr( $bar_w ); ?>" height="<?php echo esc_attr( $h_bo ); ?>" fill="#00a32a"></rect>
+                            <?php endif; ?>
+                            <?php if ( $i % $label_step === 0 ) : ?>
+                            <text x="<?php echo esc_attr( $x + $bar_w / 2 ); ?>" y="<?php echo (int) ( $chart_h + 16 ); ?>" font-size="10" fill="#888" text-anchor="middle"><?php echo $fecha_fmt; ?></text>
+                            <?php endif; ?>
+                        </g>
+                        <?php
+                        $x += $bar_w + $bar_gap;
+                    }
+                    ?>
+                </svg>
+            <?php endif; ?>
+        </div>
+
+        <!-- Origen de ventas -->
+        <div class="ss-stats-section">
+            <h3>Origen de ventas</h3>
+            <?php if ( empty( $origen_stats ) ) : ?>
+                <p style="color:#888;">Sin transacciones registradas para este evento.</p>
             <?php else : ?>
                 <table class="ss-stats-table">
                     <thead>
                         <tr>
-                            <th>Fecha</th>
-                            <th style="text-align:right;">Tickets</th>
+                            <th>Origen</th>
+                            <th style="text-align:right;">Órdenes</th>
+                            <th style="text-align:right;">Boletas</th>
+                            <th style="text-align:right;">Ingresos</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <?php foreach ( $sales_by_day as $row ) : ?>
+                        <?php foreach ( $origen_stats as $row ) : ?>
                             <tr>
-                                <td><?php echo esc_html( date_i18n( 'j M Y', strtotime( $row->day ) ) ); ?></td>
-                                <td style="text-align:right;font-weight:600;"><?php echo esc_html( $row->qty ); ?></td>
+                                <td><?php echo esc_html( $row['origen'] ); ?></td>
+                                <td style="text-align:right;"><?php echo esc_html( $row['ordenes'] ); ?></td>
+                                <td style="text-align:right;"><?php echo esc_html( $row['boletas'] ); ?></td>
+                                <td style="text-align:right;font-weight:600;">$<?php echo esc_html( number_format( $row['ingresos'], 0, ',', '.' ) ); ?></td>
                             </tr>
                         <?php endforeach; ?>
                     </tbody>
@@ -7973,6 +8104,65 @@ function ss_ajax_copy_layout(): void {
     }
 
     wp_send_json_success( array( 'message' => 'Mapa importado correctamente.' ) );
+}
+
+// ── Sincronizar zonas del mapa con la pestaña Tickets (botón manual) ──────────
+
+/**
+ * Extrae los nombres de zona únicos de un layout JSON crudo (string).
+ * Comparte ss_layout_get_rows() con el resto del plugin para no duplicar
+ * la lógica de normalización legacy/multi-piso.
+ */
+function ss_get_zone_names_from_layout_json( string $layout_raw ): array {
+    $layout = json_decode( $layout_raw, true );
+    $rows   = ss_layout_get_rows( is_array( $layout ) ? $layout : array() );
+    $zones  = array();
+    foreach ( $rows as $row ) {
+        if ( isset( $row['type'] ) && $row['type'] === 'empty' ) {
+            continue;
+        }
+        $zone = isset( $row['zone'] ) ? trim( $row['zone'] ) : '';
+        $zones[ $zone === '' ? 'GENERAL' : $zone ] = true;
+    }
+    return array_keys( $zones );
+}
+
+add_action( 'wp_ajax_ss_get_map_zones', 'ss_ajax_get_map_zones' );
+
+function ss_ajax_get_map_zones(): void {
+    check_ajax_referer( 'ss_get_map_zones', 'nonce' );
+    if ( ! current_user_can( 'edit_posts' ) ) {
+        wp_send_json_error( 'Sin permisos.' );
+    }
+
+    $post_id        = absint( $_POST['post_id'] ?? 0 );
+    $layout_raw     = wp_unslash( $_POST['layout'] ?? '' );
+    $existing_zones = isset( $_POST['existing_zones'] ) && is_array( $_POST['existing_zones'] )
+        ? array_map( 'sanitize_text_field', wp_unslash( $_POST['existing_zones'] ) )
+        : array();
+
+    $map_zones = ss_get_zone_names_from_layout_json( (string) $layout_raw );
+
+    $map_keys = array();
+    foreach ( $map_zones as $z ) {
+        $map_keys[ mb_strtoupper( $z ) ] = true;
+    }
+
+    $sale_mode = $post_id ? SS_Event_Service::instance()->get_sale_mode( $post_id ) : '';
+    $orphans   = array();
+    if ( $sale_mode !== 'no_map' ) {
+        foreach ( $existing_zones as $z ) {
+            $z = trim( $z );
+            if ( $z !== '' && ! isset( $map_keys[ mb_strtoupper( $z ) ] ) ) {
+                $orphans[] = $z;
+            }
+        }
+    }
+
+    wp_send_json_success( array(
+        'zones'   => $map_zones,
+        'orphans' => $orphans,
+    ) );
 }
 
 // ── Exportar compradores desde la pantalla del evento ─────────────────────────
@@ -9503,6 +9693,7 @@ function ss_boxoffice_ajax_sell(): void {
     $valor_cobrado = (int) ( $_POST['valor_cobrado'] ?? 0 );
     $nota_bo       = sanitize_text_field( wp_unslash( $_POST['nota_bo'] ?? '' ) );
     $origen_venta  = sanitize_text_field( wp_unslash( $_POST['origen_venta'] ?? '' ) );
+    $origen_detalle = sanitize_text_field( wp_unslash( $_POST['origen_detalle'] ?? '' ) );
 
     // ticket_qtys: JSON string like {"VIP":2,"GENERAL":1} — used in zone/hybrid mode
     $ticket_qtys_raw = isset( $_POST['ticket_qtys'] ) ? sanitize_text_field( wp_unslash( $_POST['ticket_qtys'] ) ) : '';
@@ -9638,9 +9829,12 @@ function ss_boxoffice_ajax_sell(): void {
     if ( $nota_bo !== '' ) {
         $order->update_meta_data( '_ss_nota_bo', $nota_bo );
     }
-    $origenes_validos = array( 'meta_ads', 'whatsapp', 'instagram', 'referido', 'organico' );
+    $origenes_validos = array( 'meta_ads', 'whatsapp', 'instagram', 'referido', 'organico', 'otro' );
     if ( in_array( $origen_venta, $origenes_validos, true ) ) {
         $order->update_meta_data( '_ss_bo_sale_origin', $origen_venta );
+        if ( $origen_venta === 'otro' && $origen_detalle !== '' ) {
+            $order->update_meta_data( '_ss_bo_sale_origin_detail', $origen_detalle );
+        }
     }
 
     // Build note
@@ -10516,7 +10710,11 @@ function ss_boxoffice_render( string $view, int $event_id, string $message = '',
         $sale_mode = get_post_meta( $event_id, '_ss_sale_mode', true ) ?: 'seat';
 
         // Ticket types: usar inventario central (layout) como fuente de verdad
-        $zone_inventory   = ss_get_zone_inventory( $event_id );
+        $zone_inventory    = ss_get_zone_inventory( $event_id );
+        $zone_inventory_ci = array();
+        foreach ( $zone_inventory as $inv_key => $inv_row ) {
+            $zone_inventory_ci[ mb_strtoupper( trim( $inv_key ) ) ] = $inv_row;
+        }
         $raw_ticket_types = get_post_meta( $event_id, '_ss_ticket_types', true );
         if ( is_array( $raw_ticket_types ) ) {
             foreach ( $raw_ticket_types as $tt ) {
@@ -10524,8 +10722,10 @@ function ss_boxoffice_render( string $view, int $event_id, string $message = '',
                 if ( $name === '' ) continue;
                 $price = isset( $tt['price'] ) ? floatval( $tt['price'] ) : 0;
 
-                // Si hay layout, la capacidad viene del inventario central
-                $inv = $zone_inventory[ $name ] ?? ( $zone_inventory[ strtoupper( $name ) ] ?? null );
+                // Si hay layout, la capacidad viene del inventario central.
+                // Match case-insensitive: el nombre de zona puede diferir en
+                // mayúsculas entre el mapa y Tickets (ver bug de "disponibles").
+                $inv = $zone_inventory_ci[ mb_strtoupper( $name ) ] ?? null;
                 if ( $inv ) {
                     $capacity  = $inv['available'];
                     $total     = $inv['total'];
@@ -11235,7 +11435,10 @@ a{color:#64b5f6;text-decoration:none}
                 <option value="instagram">Instagram</option>
                 <option value="referido">Referido</option>
                 <option value="organico">Orgánico</option>
+                <option value="otro">Otro…</option>
             </select>
+            <input type="text" id="bo-sell-origen-detail" placeholder="Especifica el origen (ej: TikTok, cartelera, prensa)"
+                   style="display:none;margin-top:6px;width:100%;padding:8px 10px;background:#16213e;border:1px solid #333;border-radius:8px;color:#fff;font-size:14px;outline:none;box-sizing:border-box">
         </div>
 
         <div class="bo-modal__actions">

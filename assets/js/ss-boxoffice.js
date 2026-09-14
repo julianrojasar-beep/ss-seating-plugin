@@ -391,7 +391,7 @@
     rows.forEach(function (row) {
       var name = row.getAttribute('data-ticket');
       if (!name) return;
-      var inv = inventory[name] || inventory[name.toUpperCase()];
+      var inv = zoneInventory[String(name).trim().toUpperCase()];
       if (!inv) return;
       // Update data-max and display
       row.setAttribute('data-max', inv.available);
@@ -812,6 +812,8 @@
       if (notaInput) notaInput.value = '';
       var origenInput = document.getElementById('bo-sell-origen');
       if (origenInput) origenInput.value = '';
+      var origenDetailInput = document.getElementById('bo-sell-origen-detail');
+      if (origenDetailInput) { origenDetailInput.value = ''; origenDetailInput.style.display = 'none'; }
     }
     updateValorCobrado();
   }
@@ -854,6 +856,15 @@
     document.querySelectorAll('#bo-sell-mode-toggle .bo-sell-mode-toggle__btn').forEach(function (btn) {
       btn.addEventListener('click', function () { toggleSellMode(btn.getAttribute('data-mode')); });
     });
+
+    var origenSelect = document.getElementById('bo-sell-origen');
+    var origenDetail = document.getElementById('bo-sell-origen-detail');
+    if (origenSelect && origenDetail) {
+      origenSelect.addEventListener('change', function () {
+        origenDetail.style.display = origenSelect.value === 'otro' ? '' : 'none';
+        if (origenSelect.value !== 'otro') origenDetail.value = '';
+      });
+    }
 
     if (valorInput) {
       valorInput.addEventListener('input', function () {
@@ -898,6 +909,7 @@
           valor_cobrado: valor,
           nota_bo:       (document.getElementById('bo-sell-nota') ? document.getElementById('bo-sell-nota').value.trim() : ''),
           origen_venta:  (document.getElementById('bo-sell-origen') ? document.getElementById('bo-sell-origen').value : ''),
+          origen_detalle: (document.getElementById('bo-sell-origen-detail') ? document.getElementById('bo-sell-origen-detail').value.trim() : ''),
         });
       });
     }
@@ -942,6 +954,8 @@
     if (notaInput) notaInput.value = '';
     var origenInput = document.getElementById('bo-sell-origen');
     if (origenInput) origenInput.value = '';
+    var origenDetailInput = document.getElementById('bo-sell-origen-detail');
+    if (origenDetailInput) { origenDetailInput.value = ''; origenDetailInput.style.display = 'none'; }
     document.getElementById('bo-sell-qrmode').value = 'order';
     priceWarningAcknowledged = false;
     var warnEl = document.getElementById('bo-valor-warning');

@@ -158,6 +158,83 @@
             $(this).closest('tr').remove();
         });
 
+        $('#ss-ticket-sync-map').on('click', function () {
+            var $btn    = $(this);
+            var $result = $('#ss-ticket-sync-result');
+
+            if ($btn.data('sale-mode') === 'no_map') {
+                $result.removeClass('ss-ticket-sync-error').text('Este evento no usa mapa — las zonas se configuran manualmente aquí.');
+                return;
+            }
+
+            var layout  = $('#ss_layout_hidden').val() || '';
+            var existingZones = $('#ss-ticket-tbody input[name*="[zone]"]').map(function () {
+                return $(this).val();
+            }).get();
+
+            $btn.prop('disabled', true);
+            $result.removeClass('ss-ticket-sync-error').text('Sincronizando...');
+
+            $.post(ajaxurl, {
+                action: 'ss_get_map_zones',
+                nonce: $btn.data('nonce'),
+                post_id: $btn.data('post-id'),
+                layout: layout,
+                existing_zones: existingZones
+            }).done(function (r) {
+                $btn.prop('disabled', false);
+                if (!r || !r.success) {
+                    $result.addClass('ss-ticket-sync-error').text((r && r.data) || 'Error al sincronizar.');
+                    return;
+                }
+
+                var existingUpper = existingZones.map(function (z) { return (z || '').trim().toUpperCase(); });
+                var missing = (r.data.zones || []).filter(function (z) {
+                    return existingUpper.indexOf((z || '').trim().toUpperCase()) === -1;
+                });
+
+                var $firstNew = null;
+                missing.forEach(function (zone) {
+                    var i = ticketIdx++;
+                    var row =
+                        '<tr class="ss-ticket-row ss-ticket-row-new">' +
+                            '<td><input type="text" name="ss_tt[' + i + '][zone]" placeholder="Ej: VIP" class="widefat"></td>' +
+                            '<td><input type="number" name="ss_tt[' + i + '][price]" value="" min="0" step="100" class="widefat"></td>' +
+                            '<td><input type="number" name="ss_tt[' + i + '][presale_price]" value="0" min="0" step="100" class="widefat"></td>' +
+                            '<td><input type="number" name="ss_tt[' + i + '][capacity]" value="0" min="0" class="widefat"></td>' +
+                            '<td><button type="button" class="button ss-ticket-remove" title="Eliminar">&times;</button></td>' +
+                        '</tr>';
+                    var $row = $(row);
+                    $row.find('input[name*="[zone]"]').val(zone);
+                    $('#ss-ticket-tbody').append($row);
+                    if (!$firstNew) $firstNew = $row;
+                });
+
+                $('#ss-ticket-tbody .ss-ticket-row-orphan').removeClass('ss-ticket-row-orphan');
+                var orphansUpper = (r.data.orphans || []).map(function (z) { return z.trim().toUpperCase(); });
+                if (orphansUpper.length) {
+                    $('#ss-ticket-tbody input[name*="[zone]"]').each(function () {
+                        var val = ($(this).val() || '').trim().toUpperCase();
+                        if (orphansUpper.indexOf(val) !== -1) {
+                            $(this).closest('tr').addClass('ss-ticket-row-orphan');
+                        }
+                    });
+                }
+
+                if ($firstNew) {
+                    $firstNew[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+
+                var parts = [];
+                if (missing.length) parts.push('Se agregaron ' + missing.length + ' zona(s): ' + missing.join(', '));
+                if (orphansUpper.length) parts.push((missing.length ? '. ' : '') + (r.data.orphans || []).length + ' zona(s) en Tickets ya no están en el mapa (resaltadas en rojo)');
+                $result.text(parts.length ? parts.join('') : 'El mapa y Tickets ya están sincronizados.');
+            }).fail(function () {
+                $btn.prop('disabled', false);
+                $result.addClass('ss-ticket-sync-error').text('Error de conexión.');
+            });
+        });
+
         // ── Dropdowns de ubicación y organizador ──────────────────────
 
         var registros = (typeof ssRegistros !== 'undefined') ? ssRegistros : { locations: [], organizers: [] };

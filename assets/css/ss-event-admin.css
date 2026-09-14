@@ -231,6 +231,18 @@
     color: #fff !important;
 }
 
+.ss-admin-ticket-table .ss-ticket-row-new {
+    background: #fcf9e8;
+}
+
+.ss-admin-ticket-table .ss-ticket-row-orphan {
+    background: #fbeaea;
+}
+
+#ss-ticket-sync-result.ss-ticket-sync-error {
+    color: #d63638;
+}
+
 /* ═══════════════════════════════════════════════════════════
    Layout Editor — Canvas + Sidebar
    ═══════════════════════════════════════════════════════════ */
