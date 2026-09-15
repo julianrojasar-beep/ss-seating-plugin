@@ -541,6 +541,7 @@ class SS_REST_Reports {
             $device_type  = $attribution['device_type'];
             $referrer     = $attribution['referrer'];
             $descuento    = self::get_order_discount_info( $order, $is_bo, $valor );
+            $mp_financials = SS_Mercadopago::get_order_financials( $order );
 
             $zonas_orden = array();
             $boletas_orden = 0;
@@ -633,6 +634,10 @@ class SS_REST_Reports {
                 'monto_descuento'  => $descuento['monto_descuento'],
                 'precio_bruto'     => $descuento['precio_bruto'],
                 'total_pagado'     => $descuento['total_pagado'],
+                'comision_pago'    => $mp_financials['comision_pago'],
+                'retencion_ica'    => $mp_financials['retencion_ica'],
+                'retencion_fuente' => $mp_financials['retencion_fuente'],
+                'neto_recibido'    => $mp_financials['neto_recibido'],
             );
 
             if ( $fecha_creacion ) {
