@@ -3,7 +3,7 @@
  * Plugin Name: SS Seating
  * Plugin URI: https://tusitio.com
  * Description: Sistema de selección de sillas y venta de boletas con QR para eventos.
- * Version: 1.3.29
+ * Version: 1.3.30
  * Author: Julian Rojas
  * Author URI: https://tusitio.com
  * License: GPL v2 or later
@@ -8745,9 +8745,13 @@ function ss_bo_report_csv_export(): void {
             $wo = wc_get_order( (int) $woid );
             if ( ! $wo || $wo->get_meta( '_ss_boxoffice_sale' ) === 'yes' ) { continue; }
             $w_seats  = (array) $wo->get_meta( 'ss_seats' );
-            $w_tkt    = $wo->get_meta( 'ss_ticket_qtys' );
-            $w_ct     = count( array_filter( $w_seats ) );
-            if ( is_array( $w_tkt ) ) { $w_ct += (int) array_sum( $w_tkt ); }
+            // ss_ticket_qtys (nivel pedido) solo lo guarda Box Office; una compra
+            // Web en modo zona no lo tiene — sumar por ítem con count_item_boletas()
+            // evita subestimar boletas en ese modo (ver bug de "boletas no se cuentan").
+            $w_ct = 0;
+            foreach ( $wo->get_items() as $w_item ) {
+                $w_ct += SS_REST_Reports::count_item_boletas( $w_item );
+            }
             $w_attr   = SS_REST_Reports::get_order_attribution( $wo, false );
             $web_orders_csv[] = array(
                 'oid'    => (int) $woid,
@@ -8942,9 +8946,13 @@ function ss_cierre_contable_page(): void {
             if ( $wo->get_meta( '_ss_boxoffice_sale' ) === 'yes' ) { continue; }
             if ( ! in_array( $wo->get_status(), array( 'processing', 'completed' ), true ) ) { continue; }
             $w_seats     = (array) $wo->get_meta( 'ss_seats' );
-            $w_tkt       = $wo->get_meta( 'ss_ticket_qtys' );
-            $w_ct        = count( array_filter( $w_seats ) );
-            if ( is_array( $w_tkt ) ) { $w_ct += (int) array_sum( $w_tkt ); }
+            // ss_ticket_qtys (nivel pedido) solo lo guarda Box Office; sumar por
+            // ítem con count_item_boletas() cubre también compras Web en modo
+            // zona, que antes quedaban en 0 boletas (ver bug de conteo de boletas).
+            $w_ct = 0;
+            foreach ( $wo->get_items() as $w_item ) {
+                $w_ct += SS_REST_Reports::count_item_boletas( $w_item );
+            }
             $w_bruto     = (float) $wo->get_total();
             $w_nombre    = trim( $wo->get_billing_first_name() . ' ' . $wo->get_billing_last_name() );
             $w_fecha     = $wo->get_date_created() ? $wo->get_date_created()->format( 'Y-m-d H:i' ) : '';
