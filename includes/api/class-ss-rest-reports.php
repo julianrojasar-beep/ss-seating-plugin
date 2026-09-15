@@ -295,13 +295,37 @@ class SS_REST_Reports {
     }
 
     /**
+     * Extrae un parámetro de query string del `referrer` de WC Order Attribution
+     * (document.referrer, no la URL de aterrizaje). Es un fallback de último recurso:
+     * cuando Meta/un redirect intermedio pierde utm_content/utm_term/utm_id antes de
+     * que sourcebuster.js los vea en la URL final, a veces sobreviven "fosilizados"
+     * dentro del referrer completo. wp_parse_url()/parse_str() ya decodifican
+     * URL-encoding; cualquier referrer vacío o inválido devuelve simplemente ''.
+     */
+    private static function get_utm_param_from_referrer( string $referrer, string $param ): string {
+        if ( '' === $referrer ) {
+            return '';
+        }
+        $query = wp_parse_url( $referrer, PHP_URL_QUERY );
+        if ( empty( $query ) || ! is_string( $query ) ) {
+            return '';
+        }
+        $parsed = array();
+        parse_str( $query, $parsed );
+        if ( ! isset( $parsed[ $param ] ) || ! is_string( $parsed[ $param ] ) ) {
+            return '';
+        }
+        return sanitize_text_field( $parsed[ $param ] );
+    }
+
+    /**
      * Resuelve el origen/atribución de un pedido, priorizando la "Atribución de
      * pedido" nativa de WooCommerce (WC 8.5+, sourcebuster.js) sobre la captura
      * propia del plugin (_ss_utm_source/medium/campaign), que queda como respaldo
      * cuando WC no tiene el dato. Ver CLAUDE.md, "Atribución de Meta Ads".
      * Reutilizado por el reporte REST y por el Cierre Contable.
      *
-     * @return array { origen, utm_medium, utm_campaign, fbclid, device_type, referrer }
+     * @return array { origen, utm_medium, utm_campaign, fbclid, utm_content, utm_term, utm_id, device_type, referrer }
      */
     public static function get_order_attribution( \WC_Order $order, bool $is_bo ): array {
         if ( $is_bo ) {
@@ -319,6 +343,10 @@ class SS_REST_Reports {
                 'utm_medium'   => '',
                 'utm_campaign' => '',
                 'fbclid'       => '',
+                // Box Office no tiene sesión web ni WC Order Attribution: sin fuente posible.
+                'utm_content'  => '',
+                'utm_term'     => '',
+                'utm_id'       => '',
                 'device_type'  => '',
                 'referrer'     => '',
             );
@@ -336,17 +364,33 @@ class SS_REST_Reports {
         if ( '' === $utm_campaign ) {
             $utm_campaign = (string) $order->get_meta( '_ss_utm_campaign' );
         }
+        $referrer = (string) $order->get_meta( '_wc_order_attribution_referrer' );
+
+        // utm_content/utm_term: fuente nativa de WC primero; si viene vacía, se
+        // intenta recuperar del query string embebido en el referrer (ver
+        // get_utm_param_from_referrer()). Nunca se sobrescribe un valor ya presente.
+        $utm_content = (string) $order->get_meta( '_wc_order_attribution_utm_content' );
+        if ( '' === $utm_content ) {
+            $utm_content = self::get_utm_param_from_referrer( $referrer, 'utm_content' );
+        }
+        $utm_term = (string) $order->get_meta( '_wc_order_attribution_utm_term' );
+        if ( '' === $utm_term ) {
+            $utm_term = self::get_utm_param_from_referrer( $referrer, 'utm_term' );
+        }
+        // utm_id: no existe meta propio ni de WC Order Attribution que lo capture hoy;
+        // única fuente posible es el fallback de referrer.
+        $utm_id = self::get_utm_param_from_referrer( $referrer, 'utm_id' );
 
         return array(
             'origen'       => $origen,
             'utm_medium'   => $utm_medium,
             'utm_campaign' => $utm_campaign,
             'fbclid'       => (string) $order->get_meta( '_ss_fbclid' ),
-            // Campos nativos de WC Order Attribution, no leídos hasta ahora en el plugin.
-            'utm_content'  => (string) $order->get_meta( '_wc_order_attribution_utm_content' ),
-            'utm_term'     => (string) $order->get_meta( '_wc_order_attribution_utm_term' ),
+            'utm_content'  => $utm_content,
+            'utm_term'     => $utm_term,
+            'utm_id'       => $utm_id,
             'device_type'  => (string) $order->get_meta( '_wc_order_attribution_device_type' ),
-            'referrer'     => (string) $order->get_meta( '_wc_order_attribution_referrer' ),
+            'referrer'     => $referrer,
         );
     }
 
@@ -537,6 +581,7 @@ class SS_REST_Reports {
             $utm_campaign = $attribution['utm_campaign'];
             $utm_content  = $attribution['utm_content'];
             $utm_term     = $attribution['utm_term'];
+            $utm_id       = $attribution['utm_id'];
             $fbclid       = $attribution['fbclid'];
             $device_type  = $attribution['device_type'];
             $referrer     = $attribution['referrer'];
@@ -628,6 +673,7 @@ class SS_REST_Reports {
                 // ── Campos nuevos (retrocompatibles), ver CLAUDE.md "REST API — reportes" ──
                 'utm_content'      => $utm_content,
                 'utm_term'         => $utm_term,
+                'utm_id'           => $utm_id,
                 'desglose'         => $desglose,
                 'tuvo_descuento'   => $descuento['tuvo_descuento'],
                 'tipo_descuento'   => $descuento['tipo_descuento'],
