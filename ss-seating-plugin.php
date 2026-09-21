@@ -3,7 +3,7 @@
  * Plugin Name: SS Seating
  * Plugin URI: https://tusitio.com
  * Description: Sistema de selección de sillas y venta de boletas con QR para eventos.
- * Version: 1.3.33
+ * Version: 1.3.34
  * Author: Julian Rojas
  * Author URI: https://tusitio.com
  * License: GPL v2 or later
@@ -8733,20 +8733,25 @@ function ss_bo_report_csv_export(): void {
     header( 'Content-Disposition: attachment; filename="' . $filename . '"' );
     header( 'Pragma: no-cache' );
 
-    // Ventas Web para el CSV (solo si hay evento filtrado)
+    // Ventas Web para el CSV (solo si hay evento filtrado).
+    // Busca via order items igual que la pantalla: ss_event_id siempre se
+    // guarda en item meta, pero no siempre en order meta (pedidos previos a
+    // v1.3.7) — wc_get_orders() con meta_query a nivel de pedido dejaba fuera
+    // ventas Web reales del CSV aunque sí aparecían en la tabla en pantalla.
     $web_orders_csv = array();
     if ( $event_id ) {
-        $web_ids = wc_get_orders( array(
-            'meta_query' => array(
-                array( 'key' => 'ss_event_id', 'value' => $event_id, 'compare' => '=', 'type' => 'NUMERIC' ),
-            ),
-            'status'     => array( 'wc-processing', 'wc-completed' ),
-            'limit'      => -1,
-            'return'     => 'ids',
+        $web_ids = $wpdb->get_col( $wpdb->prepare(
+            "SELECT DISTINCT oi.order_id
+             FROM {$wpdb->prefix}woocommerce_order_items AS oi
+             INNER JOIN {$wpdb->prefix}woocommerce_order_itemmeta AS oim
+                 ON oi.order_item_id = oim.order_item_id
+             WHERE oim.meta_key = 'ss_event_id' AND oim.meta_value = %s",
+            (string) $event_id
         ) );
         foreach ( $web_ids as $woid ) {
             $wo = wc_get_order( (int) $woid );
             if ( ! $wo || $wo->get_meta( '_ss_boxoffice_sale' ) === 'yes' ) { continue; }
+            if ( ! in_array( $wo->get_status(), array( 'processing', 'completed' ), true ) ) { continue; }
             $w_seats  = (array) $wo->get_meta( 'ss_seats' );
             // ss_ticket_qtys (nivel pedido) solo lo guarda Box Office; una compra
             // Web en modo zona no lo tiene — sumar por ítem con count_item_boletas()
