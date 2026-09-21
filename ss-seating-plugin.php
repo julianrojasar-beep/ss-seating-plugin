@@ -3,7 +3,7 @@
  * Plugin Name: SS Seating
  * Plugin URI: https://tusitio.com
  * Description: Sistema de selección de sillas y venta de boletas con QR para eventos.
- * Version: 1.3.32
+ * Version: 1.3.33
  * Author: Julian Rojas
  * Author URI: https://tusitio.com
  * License: GPL v2 or later
@@ -8756,12 +8756,18 @@ function ss_bo_report_csv_export(): void {
                 $w_ct += SS_REST_Reports::count_item_boletas( $w_item );
             }
             $w_attr   = SS_REST_Reports::get_order_attribution( $wo, false );
+            $w_mp     = SS_Mercadopago::get_order_financials( $wo );
+            $w_bruto  = (float) $wo->get_total();
+            $w_retencion = (float) ( $w_mp['retencion_ica'] ?? 0 ) + (float) ( $w_mp['retencion_fuente'] ?? 0 );
             $web_orders_csv[] = array(
                 'oid'    => (int) $woid,
                 'nombre' => trim( $wo->get_billing_first_name() . ' ' . $wo->get_billing_last_name() ),
                 'asientos'=> implode( ', ', array_filter( $w_seats ) ),
                 'ct'     => $w_ct,
-                'valor'  => (float) $wo->get_total(),
+                'valor'  => $w_bruto,
+                'comision'=> $w_mp['comision_pago'] ?? '',
+                'retencion'=> $w_retencion ?: '',
+                'neto'   => null !== $w_mp['neto_recibido'] ? $w_mp['neto_recibido'] : $w_bruto,
                 'metodo' => $wo->get_payment_method_title(),
                 'nota'   => '',
                 'cajero' => 'Web',
@@ -8777,7 +8783,7 @@ function ss_bo_report_csv_export(): void {
     $out = fopen( 'php://output', 'w' ); // phpcs:ignore WordPress.WP.AlternativeFunctions
     // BOM UTF-8 para que Excel lo abra correctamente
     fwrite( $out, "\xEF\xBB\xBF" ); // phpcs:ignore WordPress.WP.AlternativeFunctions
-    fputcsv( $out, array( 'Pedido', 'Persona', 'Asientos', 'CT', 'Valor cobrado', 'Método pago', 'Nota', 'Cajero', 'Evento', 'Fecha', 'Fuente', 'Origen', 'Medio', 'Campaña' ) );
+    fputcsv( $out, array( 'Pedido', 'Persona', 'Asientos', 'CT', 'Valor cobrado', 'Comisión MP', 'Retenciones MP', 'Neto recibido', 'Método pago', 'Nota', 'Cajero', 'Evento', 'Fecha', 'Fuente', 'Origen', 'Medio', 'Campaña' ) );
 
     foreach ( $log_rows as $r ) {
         $oid   = (int) $r['order_id'];
@@ -8806,6 +8812,9 @@ function ss_bo_report_csv_export(): void {
             implode( ', ', $asientos ),
             $ct,
             $valor_cobrado ?: '',
+            '',
+            '',
+            $valor_cobrado ?: '',
             $metodo_pago,
             $nota,
             $r['usuario'],
@@ -8825,6 +8834,9 @@ function ss_bo_report_csv_export(): void {
             $wr['asientos'],
             $wr['ct'],
             $wr['valor'],
+            $wr['comision'],
+            $wr['retencion'],
+            $wr['neto'],
             $wr['metodo'],
             $wr['nota'],
             $wr['cajero'],
@@ -8929,9 +8941,12 @@ function ss_cierre_contable_page(): void {
     }
 
     // Ventas Web
-    $web_rows        = array();
-    $total_web_ct    = 0;
-    $total_web_bruto = 0;
+    $web_rows           = array();
+    $total_web_ct       = 0;
+    $total_web_bruto    = 0;
+    $total_web_comision = 0;
+    $total_web_retencion= 0;
+    $total_web_neto     = 0;
 
     if ( $event_id ) {
         // Busca via order items (ss_event_id se guarda en item meta, no siempre en order meta)
@@ -8960,20 +8975,31 @@ function ss_cierre_contable_page(): void {
             $w_nombre    = trim( $wo->get_billing_first_name() . ' ' . $wo->get_billing_last_name() );
             $w_fecha     = $wo->get_date_created() ? $wo->get_date_created()->format( 'Y-m-d H:i' ) : '';
             $w_attr      = SS_REST_Reports::get_order_attribution( $wo, false );
+            $w_mp        = SS_Mercadopago::get_order_financials( $wo );
+            // Sin dato real de MP (pago no fue por MP, o no se pudo resolver aún):
+            // el neto para el consolidado cae al bruto WC, no se subestima el total.
+            $w_neto      = null !== $w_mp['neto_recibido'] ? $w_mp['neto_recibido'] : $w_bruto;
+            $w_retencion = (float) ( $w_mp['retencion_ica'] ?? 0 ) + (float) ( $w_mp['retencion_fuente'] ?? 0 );
             $web_rows[]  = array(
                 'oid'         => (int) $woid,
                 'nombre'      => $w_nombre,
                 'asientos'    => $w_seats,
                 'ct'          => $w_ct,
                 'bruto'       => $w_bruto,
+                'comision_mp' => $w_mp['comision_pago'],
+                'retencion'   => $w_retencion,
+                'neto'        => $w_neto,
                 'estado'      => $wo->get_status(),
                 'fecha'       => $w_fecha,
                 'origen'      => $w_attr['origen'],
                 'utm_medium'  => $w_attr['utm_medium'],
                 'utm_campaign'=> $w_attr['utm_campaign'],
             );
-            $total_web_ct    += $w_ct;
-            $total_web_bruto += $w_bruto;
+            $total_web_ct        += $w_ct;
+            $total_web_bruto     += $w_bruto;
+            $total_web_comision  += (float) ( $w_mp['comision_pago'] ?? 0 );
+            $total_web_retencion += $w_retencion;
+            $total_web_neto      += $w_neto;
         }
     }
 
@@ -9100,6 +9126,9 @@ function ss_cierre_contable_page(): void {
                     <th>#Pedido</th><th>Persona</th><th>Asientos</th>
                     <th style="text-align:center">CT</th>
                     <th style="text-align:right">Total WC (bruto)</th>
+                    <th style="text-align:right">Comisión MP</th>
+                    <th style="text-align:right">Retenciones</th>
+                    <th style="text-align:right">Neto recibido</th>
                     <th>Estado</th><th>Origen</th><th>Medio</th><th>Campaña</th><th>Fecha</th>
                 </tr>
             </thead>
@@ -9111,6 +9140,9 @@ function ss_cierre_contable_page(): void {
                     <td style="font-family:monospace;font-size:12px"><?php echo esc_html( implode( ', ', array_filter( $wr['asientos'] ) ) ); ?></td>
                     <td style="text-align:center"><?php echo esc_html( $wr['ct'] ); ?></td>
                     <td style="text-align:right"><strong>$<?php echo number_format( $wr['bruto'], 0, ',', '.' ); ?></strong></td>
+                    <td style="text-align:right;color:#b91c1c"><?php echo null !== $wr['comision_mp'] ? '-$' . number_format( $wr['comision_mp'], 0, ',', '.' ) : '—'; ?></td>
+                    <td style="text-align:right;color:#b91c1c"><?php echo $wr['retencion'] > 0 ? '-$' . number_format( $wr['retencion'], 0, ',', '.' ) : '—'; ?></td>
+                    <td style="text-align:right"><strong style="color:#065f46">$<?php echo number_format( $wr['neto'], 0, ',', '.' ); ?></strong></td>
                     <td><?php echo esc_html( wc_get_order_status_name( $wr['estado'] ) ); ?></td>
                     <td><?php echo esc_html( $wr['origen'] ?: '—' ); ?></td>
                     <td><?php echo esc_html( $wr['utm_medium'] ?: '—' ); ?></td>
@@ -9124,28 +9156,43 @@ function ss_cierre_contable_page(): void {
                     <td colspan="3" style="padding:8px 10px">Totales web</td>
                     <td style="text-align:center;padding:8px 10px"><?php echo esc_html( $total_web_ct ); ?></td>
                     <td style="text-align:right;padding:8px 10px">$<?php echo number_format( $total_web_bruto, 0, ',', '.' ); ?></td>
+                    <td style="text-align:right;padding:8px 10px;color:#b91c1c">-$<?php echo number_format( $total_web_comision, 0, ',', '.' ); ?></td>
+                    <td style="text-align:right;padding:8px 10px;color:#b91c1c">-$<?php echo number_format( $total_web_retencion, 0, ',', '.' ); ?></td>
+                    <td style="text-align:right;padding:8px 10px;color:#065f46">$<?php echo number_format( $total_web_neto, 0, ',', '.' ); ?></td>
                     <td colspan="5"></td>
                 </tr>
             </tfoot>
         </table>
         <p style="color:#888;font-size:12px;margin-top:4px">
-            <?php echo count( $web_rows ); ?> pedidos · <?php echo esc_html( $total_web_ct ); ?> boletas · $<?php echo number_format( $total_web_bruto, 0, ',', '.' ); ?> bruto WC
+            <?php echo count( $web_rows ); ?> pedidos · <?php echo esc_html( $total_web_ct ); ?> boletas · $<?php echo number_format( $total_web_bruto, 0, ',', '.' ); ?> bruto WC · $<?php echo number_format( $total_web_neto, 0, ',', '.' ); ?> neto recibido
+        </p>
+        <p style="color:#9ca3af;font-size:11px;margin-top:2px">
+            Comisión y retenciones vienen de la API de Mercado Pago (dato real, no estimado). Si un pedido no fue pagado por Mercado Pago o el dato aún no se pudo resolver, el "neto recibido" cae al bruto WC.
         </p>
         <?php endif; ?>
 
         <?php /* ── Consolidado ── */ ?>
-        <?php $total_general = $total_valor + $total_web_bruto + $total_extras; ?>
+        <?php
+        // Web se suma por neto real recibido (post-comisión/retenciones de MP),
+        // no por el bruto de WooCommerce — así el TOTAL RECAUDADO refleja el
+        // dinero que efectivamente entra, no lo que el cliente pagó en pantalla.
+        $total_general = $total_valor + $total_web_neto + $total_extras;
+        ?>
         <h2 style="font-size:15px;border-bottom:2px solid #2271b1;padding-bottom:4px;margin:24px 0 12px">Consolidado</h2>
         <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:14px 16px;font-size:13px;margin-bottom:16px">
             <div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:10px">
                 <div>Total Box Office: <strong>$<?php echo number_format( $total_valor, 0, ',', '.' ); ?></strong></div>
-                <div>Total Web (WC): <strong>$<?php echo number_format( $total_web_bruto, 0, ',', '.' ); ?></strong></div>
+                <div>Total Web (neto, post-MP): <strong>$<?php echo number_format( $total_web_neto, 0, ',', '.' ); ?></strong>
+                    <?php if ( $total_web_comision > 0 || $total_web_retencion > 0 ) : ?>
+                    <span style="color:#9ca3af;font-size:11px"> (bruto $<?php echo number_format( $total_web_bruto, 0, ',', '.' ); ?>, -$<?php echo number_format( $total_web_comision + $total_web_retencion, 0, ',', '.' ); ?> comisión/retenciones MP)</span>
+                    <?php endif; ?>
+                </div>
                 <?php if ( $total_extras > 0 ) : ?>
                 <div>Extras / Taquilla: <strong>$<?php echo number_format( $total_extras, 0, ',', '.' ); ?></strong></div>
                 <?php endif; ?>
             </div>
             <div style="font-size:15px;font-weight:700;color:#065f46;border-top:1px solid #e5e7eb;padding-top:10px;margin-top:2px">
-                TOTAL RECAUDADO: <span style="font-size:17px">$<?php echo number_format( $total_general, 0, ',', '.' ); ?></span>
+                TOTAL RECAUDADO (neto): <span style="font-size:17px">$<?php echo number_format( $total_general, 0, ',', '.' ); ?></span>
             </div>
         </div>
 

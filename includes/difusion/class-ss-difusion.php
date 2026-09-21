@@ -153,7 +153,7 @@ class SS_Difusion {
             }
 
             $ch = $channels[ $channel ];
-            wp_redirect( self::build_utm_url( $event_id, $serie, $ch['source'], $ch['medium'] ), 302 );
+            wp_redirect( self::build_utm_url( $event_id, $serie, $ch['source'], $ch['medium'], self::capture_attribution_passthrough() ), 302 );
             exit;
         }
 
@@ -191,16 +191,52 @@ class SS_Difusion {
         return $prefix . '_' . $year . '_' . $mon;
     }
 
-    public static function build_utm_url( int $event_id, array $serie, string $source, string $medium ): string {
+    /**
+     * Whitelist de parámetros de atribución que el smart link puede reenviar tal
+     * cual desde la request entrante (ver capture_attribution_passthrough()).
+     * utm_source/utm_medium/utm_campaign NUNCA se incluyen aquí: siempre los
+     * determina la lógica de canal/serie, nunca la request.
+     */
+    private const ATTRIBUTION_PASSTHROUGH_PARAMS = array( 'utm_id', 'utm_term', 'utm_content', 'fbclid' );
+
+    /**
+     * Lee de $_GET solo los parámetros de la whitelist, si vienen no vacíos.
+     * No se guarda nada en WP aquí — solo sobreviven al redirect 302 para que
+     * la landing/WooCommerce los capture como lo hacen hoy con cualquier otra URL.
+     */
+    private static function capture_attribution_passthrough(): array {
+        $captured = array();
+        foreach ( self::ATTRIBUTION_PASSTHROUGH_PARAMS as $param ) {
+            if ( empty( $_GET[ $param ] ) ) {
+                continue;
+            }
+            $value = sanitize_text_field( wp_unslash( $_GET[ $param ] ) );
+            if ( '' === $value ) {
+                continue;
+            }
+            $captured[ $param ] = $value;
+        }
+        return $captured;
+    }
+
+    public static function build_utm_url( int $event_id, array $serie, string $source, string $medium, array $extra_params = array() ): string {
         // Va directo al permalink real del evento (no a /{slug}/) para evitar un segundo
         // salto por el smart link plano, que no reenvía query string y perdería los UTM.
         $base     = get_permalink( $event_id );
         $campaign = self::build_campaign( $event_id, $serie );
-        return add_query_arg( array(
+        $args     = array(
             'utm_source'   => $source,
             'utm_medium'   => $medium,
             'utm_campaign' => $campaign,
-        ), $base );
+        );
+        // Solo se copian claves de la whitelist; utm_source/medium/campaign de $args
+        // no pueden ser sobrescritas porque no forman parte de ATTRIBUTION_PASSTHROUGH_PARAMS.
+        foreach ( self::ATTRIBUTION_PASSTHROUGH_PARAMS as $param ) {
+            if ( isset( $extra_params[ $param ] ) && '' !== $extra_params[ $param ] ) {
+                $args[ $param ] = $extra_params[ $param ];
+            }
+        }
+        return add_query_arg( $args, $base );
     }
 
     public static function get_channels(): array {
