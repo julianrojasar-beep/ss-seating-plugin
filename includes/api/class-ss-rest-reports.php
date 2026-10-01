@@ -54,6 +54,25 @@ class SS_REST_Reports {
                 ),
             ),
         ) );
+
+        // Lista de eventos para que el dashboard descubra solo qué event_id consultar
+        // en /reports/sales (antes la lista se mantenía a mano en n8n/Make).
+        register_rest_route( 'ss-seating/v1', '/reports/events', array(
+            'methods'             => 'GET',
+            'callback'            => array( __CLASS__, 'get_events_report' ),
+            'permission_callback' => array( __CLASS__, 'check_permission' ),
+            'args'                => array(
+                // Opcionales, filtran por _ss_event_date (YYYY-MM-DD). Sin params: todos.
+                'desde' => array(
+                    'required' => false,
+                    'type'     => 'string',
+                ),
+                'hasta' => array(
+                    'required' => false,
+                    'type'     => 'string',
+                ),
+            ),
+        ) );
     }
 
     /**
@@ -733,5 +752,61 @@ class SS_REST_Reports {
             'transacciones' => $transacciones,
             'serie_diaria'  => array_values( $serie_diaria ),
         ), 200 );
+    }
+
+    /**
+     * GET /reports/events?desde=&hasta=
+     * Eventos publicados con fecha, ciudad, teatro y aforo. No calcula ventas
+     * (eso vive en /reports/sales por evento) para que la consulta sea liviana.
+     * Con desde/hasta se excluyen eventos sin fecha.
+     */
+    public static function get_events_report( \WP_REST_Request $request ): \WP_REST_Response {
+        $desde = (string) $request->get_param( 'desde' );
+        $hasta = (string) $request->get_param( 'hasta' );
+        foreach ( array( $desde, $hasta ) as $d ) {
+            if ( '' !== $d && ! preg_match( '/^\d{4}-\d{2}-\d{2}$/', $d ) ) {
+                return new \WP_REST_Response( array( 'error' => 'desde/hasta deben ser YYYY-MM-DD' ), 400 );
+            }
+        }
+
+        $ids = get_posts( array(
+            'post_type'      => 'ss_event',
+            'post_status'    => 'publish',
+            'posts_per_page' => -1,
+            'fields'         => 'ids',
+            'no_found_rows'  => true,
+        ) );
+
+        $eventos = array();
+        foreach ( $ids as $event_id ) {
+            $fecha = (string) get_post_meta( $event_id, '_ss_event_date', true );
+            if ( ( '' !== $desde || '' !== $hasta ) && '' === $fecha ) {
+                continue;
+            }
+            if ( '' !== $desde && $fecha < $desde ) { continue; }
+            if ( '' !== $hasta && $fecha > $hasta ) { continue; }
+
+            $capacidad = 0;
+            foreach ( SS_Event_Service::instance()->get_ticket_types( $event_id ) as $tt ) {
+                $capacidad += (int) ( $tt['capacity'] ?? 0 );
+            }
+
+            $eventos[] = array(
+                'event_id'  => (int) $event_id,
+                'evento'    => get_the_title( $event_id ),
+                'fecha'     => $fecha,
+                'hora'      => (string) get_post_meta( $event_id, '_ss_event_time', true ),
+                'ciudad'    => (string) get_post_meta( $event_id, '_ss_location_city', true ),
+                'teatro'    => (string) get_post_meta( $event_id, '_ss_location_venue', true ),
+                'sale_mode' => SS_Event_Service::instance()->get_sale_mode( $event_id ),
+                'capacidad' => $capacidad,
+            );
+        }
+
+        usort( $eventos, function ( $a, $b ) {
+            return strcmp( $a['fecha'], $b['fecha'] );
+        } );
+
+        return new \WP_REST_Response( array( 'eventos' => $eventos ), 200 );
     }
 }
