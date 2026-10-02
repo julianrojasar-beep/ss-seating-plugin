@@ -200,15 +200,22 @@ class SS_REST_Reports {
             }
         }
 
+        // Solo items SIN ss_event_id propio (LEFT JOIN ... IS NULL): un traslado de
+        // evento actualiza ss_event_id del item pero no el _ss_event_id del producto,
+        // así que sin este filtro el fallback reasignaba pedidos trasladados de vuelta
+        // a su evento original.
         $fallback_sql = "SELECT oi.order_id, pm.meta_value AS event_id
                 FROM {$wpdb->prefix}woocommerce_order_items AS oi
                 INNER JOIN {$wpdb->prefix}woocommerce_order_itemmeta AS oim
                     ON oi.order_item_id = oim.order_item_id AND oim.meta_key = '_product_id'
                 INNER JOIN {$wpdb->postmeta} AS pm
-                    ON pm.post_id = oim.meta_value AND pm.meta_key = '_ss_event_id'";
+                    ON pm.post_id = oim.meta_value AND pm.meta_key = '_ss_event_id'
+                LEFT JOIN {$wpdb->prefix}woocommerce_order_itemmeta AS ev
+                    ON ev.order_item_id = oi.order_item_id AND ev.meta_key = 'ss_event_id'
+                WHERE ev.meta_id IS NULL";
 
         if ( $event_id ) {
-            $fallback_sql = $wpdb->prepare( $fallback_sql . ' WHERE pm.meta_value = %s', (string) $event_id );
+            $fallback_sql = $wpdb->prepare( $fallback_sql . ' AND pm.meta_value = %s', (string) $event_id );
         }
 
         $fallback_rows = $wpdb->get_results( $fallback_sql, ARRAY_A );
