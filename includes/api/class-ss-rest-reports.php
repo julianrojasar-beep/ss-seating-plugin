@@ -169,6 +169,13 @@ class SS_REST_Reports {
     /**
      * Todos los order_id que tienen ss_event_id en item meta, con su event_id.
      * Mismo patrón de JOIN que ya usa Cierre Contable (order_items + order_itemmeta).
+     *
+     * Incluye además, como fallback, los pedidos cuyos items NO tienen
+     * ss_event_id propio pero cuyo _product_id (itemmeta nativo de WC)
+     * corresponde a un producto con postmeta _ss_event_id — misma opción (b)
+     * que usa ss_get_event_id_from_order() para pedidos web antiguos/directos
+     * donde no se llegó a persistir ss_event_id en el order item. Sin este
+     * fallback esos pedidos quedaban invisibles para el dashboard.
      */
     private static function get_order_event_map( ?int $event_id = null ): array {
         global $wpdb;
@@ -187,6 +194,25 @@ class SS_REST_Reports {
 
         $map = array();
         foreach ( $rows as $row ) {
+            $oid = (int) $row['order_id'];
+            if ( ! isset( $map[ $oid ] ) ) {
+                $map[ $oid ] = (int) $row['event_id'];
+            }
+        }
+
+        $fallback_sql = "SELECT oi.order_id, pm.meta_value AS event_id
+                FROM {$wpdb->prefix}woocommerce_order_items AS oi
+                INNER JOIN {$wpdb->prefix}woocommerce_order_itemmeta AS oim
+                    ON oi.order_item_id = oim.order_item_id AND oim.meta_key = '_product_id'
+                INNER JOIN {$wpdb->postmeta} AS pm
+                    ON pm.post_id = oim.meta_value AND pm.meta_key = '_ss_event_id'";
+
+        if ( $event_id ) {
+            $fallback_sql = $wpdb->prepare( $fallback_sql . ' WHERE pm.meta_value = %s', (string) $event_id );
+        }
+
+        $fallback_rows = $wpdb->get_results( $fallback_sql, ARRAY_A );
+        foreach ( $fallback_rows as $row ) {
             $oid = (int) $row['order_id'];
             if ( ! isset( $map[ $oid ] ) ) {
                 $map[ $oid ] = (int) $row['event_id'];
@@ -730,14 +756,29 @@ class SS_REST_Reports {
         }
         unset( $dia_row );
 
-        $ocupacion = array();
-        foreach ( $ticket_types as $tt ) {
-            $zona = $tt['zone'] ?? 'GENERAL';
-            $ocupacion[] = array(
-                'zona'      => $zona,
-                'capacidad' => (int) ( $tt['capacity'] ?? 0 ),
-                'vendidas'  => (int) ( $vendidas_por_zona[ $zona ] ?? 0 ),
-            );
+        // Ocupación: fuente principal es ss_get_zone_inventory() (respeta seat/
+        // hybrid/general/no_map, incluye reservas y tickets sin silla). Solo se
+        // cae a la lógica anterior basada en _ss_ticket_types si viene vacío
+        // (evento sin layout ni ticket types reconocibles).
+        $zone_inventory = ss_get_zone_inventory( $event_id );
+        $ocupacion      = array();
+        if ( ! empty( $zone_inventory ) ) {
+            foreach ( $zone_inventory as $zona => $inv ) {
+                $ocupacion[] = array(
+                    'zona'      => $zona,
+                    'capacidad' => (int) $inv['total'],
+                    'vendidas'  => (int) $inv['sold'],
+                );
+            }
+        } else {
+            foreach ( $ticket_types as $tt ) {
+                $zona = $tt['zone'] ?? 'GENERAL';
+                $ocupacion[] = array(
+                    'zona'      => $zona,
+                    'capacidad' => (int) ( $tt['capacity'] ?? 0 ),
+                    'vendidas'  => (int) ( $vendidas_por_zona[ $zona ] ?? 0 ),
+                );
+            }
         }
 
         return new \WP_REST_Response( array(
@@ -756,11 +797,16 @@ class SS_REST_Reports {
 
     /**
      * GET /reports/events?desde=&hasta=
-     * Eventos publicados con fecha, ciudad, teatro y aforo. No calcula ventas
-     * (eso vive en /reports/sales por evento) para que la consulta sea liviana.
+     * Eventos publicados/privados/futuros, más los draft que ya tengan pedidos
+     * asociados (ss_event_id en order itemmeta) — un evento en draft con ventas
+     * reales (típicamente reabierto o despublicado después del show) no debe
+     * desaparecer del dashboard. No calcula ventas detalladas (eso vive en
+     * /reports/sales por evento) para que la consulta sea liviana.
      * Con desde/hasta se excluyen eventos sin fecha.
      */
     public static function get_events_report( \WP_REST_Request $request ): \WP_REST_Response {
+        global $wpdb;
+
         $desde = (string) $request->get_param( 'desde' );
         $hasta = (string) $request->get_param( 'hasta' );
         foreach ( array( $desde, $hasta ) as $d ) {
@@ -771,11 +817,26 @@ class SS_REST_Reports {
 
         $ids = get_posts( array(
             'post_type'      => 'ss_event',
-            'post_status'    => 'publish',
+            'post_status'    => array( 'publish', 'private', 'future' ),
             'posts_per_page' => -1,
             'fields'         => 'ids',
             'no_found_rows'  => true,
         ) );
+
+        $ordered_event_ids = $wpdb->get_col(
+            "SELECT DISTINCT oim.meta_value
+             FROM {$wpdb->prefix}woocommerce_order_itemmeta AS oim
+             WHERE oim.meta_key = 'ss_event_id'"
+        );
+        foreach ( $ordered_event_ids as $eid ) {
+            $eid = (int) $eid;
+            if ( $eid && ! in_array( $eid, $ids, true )
+                && get_post_type( $eid ) === 'ss_event'
+                && get_post_status( $eid ) === 'draft'
+            ) {
+                $ids[] = $eid;
+            }
+        }
 
         $eventos = array();
         foreach ( $ids as $event_id ) {
@@ -786,9 +847,19 @@ class SS_REST_Reports {
             if ( '' !== $desde && $fecha < $desde ) { continue; }
             if ( '' !== $hasta && $fecha > $hasta ) { continue; }
 
-            $capacidad = 0;
-            foreach ( SS_Event_Service::instance()->get_ticket_types( $event_id ) as $tt ) {
-                $capacidad += (int) ( $tt['capacity'] ?? 0 );
+            // Capacidad: fuente principal ss_get_zone_inventory() (respeta
+            // seat/hybrid/general/no_map); fallback a _ss_ticket_types si viene vacío.
+            $zone_inventory = ss_get_zone_inventory( $event_id );
+            if ( ! empty( $zone_inventory ) ) {
+                $capacidad = 0;
+                foreach ( $zone_inventory as $inv ) {
+                    $capacidad += (int) $inv['total'];
+                }
+            } else {
+                $capacidad = 0;
+                foreach ( SS_Event_Service::instance()->get_ticket_types( $event_id ) as $tt ) {
+                    $capacidad += (int) ( $tt['capacity'] ?? 0 );
+                }
             }
 
             $eventos[] = array(
@@ -800,6 +871,7 @@ class SS_REST_Reports {
                 'teatro'    => (string) get_post_meta( $event_id, '_ss_location_venue', true ),
                 'sale_mode' => SS_Event_Service::instance()->get_sale_mode( $event_id ),
                 'capacidad' => $capacidad,
+                'estado'    => get_post_status( $event_id ),
             );
         }
 
