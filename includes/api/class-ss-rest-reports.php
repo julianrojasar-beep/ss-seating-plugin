@@ -167,6 +167,16 @@ class SS_REST_Reports {
     }
 
     /**
+     * get_the_title() devuelve el título ya pasado por 'the_title', que en el
+     * contexto REST (JSON, no HTML) deja entidades como "&#8211;" literales en
+     * vez del carácter real — se decodifican acá para que el dashboard externo
+     * no tenga que lidiar con eso.
+     */
+    private static function decode_title( int $event_id ): string {
+        return html_entity_decode( get_the_title( $event_id ), ENT_QUOTES, 'UTF-8' );
+    }
+
+    /**
      * Todos los order_id que tienen ss_event_id en item meta, con su event_id.
      * Mismo patrón de JOIN que ya usa Cierre Contable (order_items + order_itemmeta).
      *
@@ -297,7 +307,7 @@ class SS_REST_Reports {
             $customers[ $email ]['zonas'] = array_values( array_unique( array_merge( $customers[ $email ]['zonas'], array_keys( $zonas ) ) ) );
             $customers[ $email ]['compras'][] = array(
                 'event_id' => $event_id,
-                'evento'   => get_the_title( $event_id ),
+                'evento'   => self::decode_title( $event_id ),
                 'order_id' => $order_id,
                 'canal'    => $is_bo ? 'bo' : 'web',
                 'boletas'  => $boletas,
@@ -790,7 +800,7 @@ class SS_REST_Reports {
 
         return new \WP_REST_Response( array(
             'event_id'      => $event_id,
-            'evento'        => get_the_title( $event_id ),
+            'evento'        => self::decode_title( $event_id ),
             'ocupacion'     => $ocupacion,
             'ingresos'      => array(
                 'web'   => $ingresos_web,
@@ -871,7 +881,7 @@ class SS_REST_Reports {
 
             $eventos[] = array(
                 'event_id'  => (int) $event_id,
-                'evento'    => get_the_title( $event_id ),
+                'evento'    => self::decode_title( $event_id ),
                 'fecha'     => $fecha,
                 'hora'      => (string) get_post_meta( $event_id, '_ss_event_time', true ),
                 'ciudad'    => (string) get_post_meta( $event_id, '_ss_location_city', true ),
