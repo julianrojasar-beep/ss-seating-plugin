@@ -128,6 +128,7 @@ class SS_Settings {
         } elseif ( $action === 'save_modulos' ) {
             $redirect_tab = 'modulos';
             update_option( 'ss_fidelizacion_enabled', ! empty( $_POST['ss_fidelizacion_enabled'] ) ? '1' : '0' );
+            update_option( 'ss_ventas_sin_origen_enabled', ! empty( $_POST['ss_ventas_sin_origen_enabled'] ) ? '1' : '0' );
 
         } elseif ( $action === 'save_difusion' ) {
             $redirect_tab = 'difusion';
@@ -789,7 +790,8 @@ class SS_Settings {
     }
 
     private function render_tab_modulos( string $nonce ): void {
-        $fidelizacion = get_option( 'ss_fidelizacion_enabled', '0' ) === '1';
+        $fidelizacion     = get_option( 'ss_fidelizacion_enabled', '0' ) === '1';
+        $ventas_sin_origen = get_option( 'ss_ventas_sin_origen_enabled', '0' ) === '1';
         ?>
         <form method="post" action="">
             <input type="hidden" name="_ss_cfg_nonce" value="<?php echo esc_attr( $nonce ); ?>">
@@ -811,6 +813,18 @@ class SS_Settings {
                         <p class="description">
                             Habilita el menú Fidelización, el seguimiento de asistencia por cliente y los descuentos automáticos por fidelidad.
                             Solo activar en sitios que usen este sistema.
+                        </p>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row">Ventas sin origen</th>
+                    <td>
+                        <label>
+                            <input type="checkbox" name="ss_ventas_sin_origen_enabled" value="1" <?php checked( $ventas_sin_origen ); ?>>
+                            Activar pantalla "Ventas sin origen"
+                        </label>
+                        <p class="description">
+                            Habilita el menú para asignar origen retroactivamente a pedidos Web/Box Office sin atribución, cruzando todos los eventos. Uso puntual de limpieza de datos.
                         </p>
                     </td>
                 </tr>

@@ -16,6 +16,9 @@
 if ( ! defined( 'SS_FIDELIZACION_ENABLED' ) ) {
     define( 'SS_FIDELIZACION_ENABLED', get_option( 'ss_fidelizacion_enabled', '0' ) === '1' );
 }
+if ( ! defined( 'SS_VENTAS_SIN_ORIGEN_ENABLED' ) ) {
+    define( 'SS_VENTAS_SIN_ORIGEN_ENABLED', get_option( 'ss_ventas_sin_origen_enabled', '0' ) === '1' );
+}
 
 // ── Auto-updater via GitHub Releases ──────────────────────────────────────────
 $ss_puc = plugin_dir_path( __FILE__ ) . 'lib/plugin-update-checker/plugin-update-checker.php';
@@ -6650,6 +6653,19 @@ function ss_seating_admin_menu(): void {
         'ss_cierre_contable_page'
     );
 
+    // 7. Ventas sin origen (limpieza retroactiva, cruza todos los eventos)
+    // Oculto detrás del feature flag en Configuración → Módulos (igual que Fidelización).
+    if ( SS_VENTAS_SIN_ORIGEN_ENABLED ) {
+        add_submenu_page(
+            'ss-seating-dashboard',
+            __( 'Ventas sin origen', 'ss-seating' ),
+            __( 'Ventas sin origen', 'ss-seating' ),
+            'manage_woocommerce',
+            'ss-ventas-sin-origen',
+            'ss_ventas_sin_origen_page'
+        );
+    }
+
     // Fidelización y Configuración se registran desde sus propias clases (priority 20/25)
 
     // Páginas ocultas (no aparecen en el menú, pero accesibles por URL)
@@ -9352,7 +9368,272 @@ function ss_cierre_contable_page(): void {
     <?php
 }
 
-// Box Office menu registrado en ss_seating_admin_menu() (menú unificado SS Seating).
+// ═══════════════════════════════════════════════════════════════════════════════
+// VENTAS SIN ORIGEN — limpieza retroactiva de atribución (todos los eventos)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Pedidos (Web + Box Office) sin origen de atribución, cruzando todos los
+ * eventos. A diferencia de Cierre Contable (que exige elegir un evento),
+ * esta pantalla existe para hacer la limpieza de una sola sentada — el
+ * filtro de evento/fechas es opcional, no obligatorio.
+ */
+function ss_ventas_sin_origen_get_rows( int $event_id = 0, string $date_from = '', string $date_to = '' ): array {
+    global $wpdb;
+    $rows = array();
+
+    // ── Box Office: via wp_ss_boxoffice_log (mismo patrón que Cierre Contable) ──
+    $log_table = $wpdb->prefix . 'ss_boxoffice_log';
+    $where     = array( "l.accion LIKE 'vender%%'" );
+    $params    = array();
+    if ( $event_id )  { $where[] = 'l.event_id = %d';          $params[] = $event_id; }
+    if ( $date_from ) { $where[] = 'DATE(l.created_at) >= %s'; $params[] = $date_from; }
+    if ( $date_to )   { $where[] = 'DATE(l.created_at) <= %s'; $params[] = $date_to; }
+    $where_sql = implode( ' AND ', $where );
+    $sql       = "SELECT DISTINCT l.order_id, l.event_id FROM {$log_table} l WHERE {$where_sql} ORDER BY l.created_at DESC LIMIT 500";
+    $bo_log    = $params
+        ? $wpdb->get_results( $wpdb->prepare( $sql, ...$params ), ARRAY_A )
+        : $wpdb->get_results( $sql, ARRAY_A );
+
+    foreach ( $bo_log as $r ) {
+        $order = wc_get_order( (int) $r['order_id'] );
+        if ( ! $order ) { continue; }
+        $origen = (string) $order->get_meta( '_ss_bo_sale_origin' );
+        if ( '' !== $origen ) { continue; }
+        $rows[] = ss_ventas_sin_origen_build_row( $order, (int) $r['event_id'], 'bo' );
+    }
+
+    // ── Web: via order itemmeta (ss_event_id siempre vive ahí, no en order meta) ──
+    $item_where  = array( "oim.meta_key = 'ss_event_id'" );
+    $item_params = array();
+    if ( $event_id ) { $item_where[] = 'oim.meta_value = %s'; $item_params[] = (string) $event_id; }
+    $item_where_sql = implode( ' AND ', $item_where );
+    $item_sql       = "SELECT DISTINCT oi.order_id, oim.meta_value AS event_id
+                        FROM {$wpdb->prefix}woocommerce_order_items AS oi
+                        INNER JOIN {$wpdb->prefix}woocommerce_order_itemmeta AS oim
+                            ON oi.order_item_id = oim.order_item_id
+                        WHERE {$item_where_sql}
+                        LIMIT 1000";
+    $web_items      = $item_params
+        ? $wpdb->get_results( $wpdb->prepare( $item_sql, ...$item_params ), ARRAY_A )
+        : $wpdb->get_results( $item_sql, ARRAY_A );
+
+    foreach ( $web_items as $r ) {
+        $order = wc_get_order( (int) $r['order_id'] );
+        if ( ! $order || $order->get_meta( '_ss_boxoffice_sale' ) === 'yes' ) { continue; }
+        if ( ! in_array( $order->get_status(), array( 'processing', 'completed' ), true ) ) { continue; }
+        $created = $order->get_date_created();
+        if ( $date_from && ( ! $created || $created->format( 'Y-m-d' ) < $date_from ) ) { continue; }
+        if ( $date_to   && ( ! $created || $created->format( 'Y-m-d' ) > $date_to ) )   { continue; }
+        $origen = SS_REST_Reports::get_order_attribution( $order, false )['origen'];
+        if ( '' !== $origen ) { continue; }
+        $rows[] = ss_ventas_sin_origen_build_row( $order, (int) $r['event_id'], 'web' );
+    }
+
+    usort( $rows, static function ( $a, $b ) {
+        return strcmp( $b['fecha'], $a['fecha'] );
+    } );
+
+    return $rows;
+}
+
+function ss_ventas_sin_origen_build_row( WC_Order $order, int $event_id, string $canal ): array {
+    $created = $order->get_date_created();
+    $monto   = 'bo' === $canal
+        ? (float) $order->get_meta( '_ss_valor_cobrado' )
+        : (float) $order->get_total();
+
+    return array(
+        'order_id' => $order->get_id(),
+        'event_id' => $event_id,
+        'evento'   => html_entity_decode( get_the_title( $event_id ), ENT_QUOTES, 'UTF-8' ),
+        'fecha'    => $created ? $created->format( 'Y-m-d H:i' ) : '',
+        'canal'    => $canal,
+        'monto'    => $monto,
+        'nombre'   => trim( $order->get_billing_first_name() . ' ' . $order->get_billing_last_name() ),
+        'telefono' => $order->get_billing_phone(),
+        'nota'     => (string) $order->get_meta( '_ss_nota_bo' ),
+    );
+}
+
+function ss_ventas_sin_origen_page(): void {
+    if ( ! current_user_can( 'manage_woocommerce' ) ) { return; }
+
+    $event_id  = isset( $_GET['ss_event_id'] ) ? absint( $_GET['ss_event_id'] ) : 0;
+    $date_from = isset( $_GET['ss_from'] ) ? sanitize_text_field( wp_unslash( $_GET['ss_from'] ) ) : '';
+    $date_to   = isset( $_GET['ss_to'] )   ? sanitize_text_field( wp_unslash( $_GET['ss_to'] ) )   : '';
+
+    $events = get_posts( array(
+        'post_type'      => 'ss_event',
+        'post_status'    => array( 'publish', 'private' ),
+        'posts_per_page' => 300,
+        'orderby'        => 'date',
+        'order'          => 'DESC',
+        'fields'         => 'ids',
+    ) );
+
+    $rows  = ss_ventas_sin_origen_get_rows( $event_id, $date_from, $date_to );
+    $nonce = wp_create_nonce( 'ss_ventas_sin_origen' );
+    ?>
+    <div class="wrap">
+        <h1>Ventas sin origen</h1>
+        <p>Pedidos Web y Box Office sin atribución (ni UTM nativo de WooCommerce, ni origen de taquilla). Asigná un origen por fila — se guarda directo en el pedido y el próximo "Sincronizar TODO" en n8n lo trae con origen lleno.</p>
+
+        <form method="get" style="margin:16px 0;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <input type="hidden" name="page" value="ss-ventas-sin-origen">
+            <select name="ss_event_id">
+                <option value="0">— Todos los eventos —</option>
+                <?php foreach ( $events as $eid ) : ?>
+                    <option value="<?php echo (int) $eid; ?>" <?php selected( $event_id, $eid ); ?>><?php echo esc_html( get_the_title( $eid ) ); ?></option>
+                <?php endforeach; ?>
+            </select>
+            <label>Desde <input type="date" name="ss_from" value="<?php echo esc_attr( $date_from ); ?>"></label>
+            <label>Hasta <input type="date" name="ss_to" value="<?php echo esc_attr( $date_to ); ?>"></label>
+            <button type="submit" class="button">Filtrar</button>
+        </form>
+
+        <p><strong><?php echo count( $rows ); ?></strong> pedidos sin origen<?php echo $event_id || $date_from || $date_to ? ' (con el filtro aplicado)' : ''; ?>.</p>
+
+        <table class="widefat striped" id="ss-sin-origen-table">
+            <thead>
+                <tr>
+                    <th>Pedido</th>
+                    <th>Evento</th>
+                    <th>Fecha</th>
+                    <th>Canal</th>
+                    <th>Monto</th>
+                    <th>Cliente</th>
+                    <th>Teléfono</th>
+                    <th>Nota taquilla</th>
+                    <th style="min-width:220px">Origen</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php if ( empty( $rows ) ) : ?>
+                    <tr><td colspan="9">Sin pendientes con este filtro 🎉</td></tr>
+                <?php endif; ?>
+                <?php foreach ( $rows as $r ) : ?>
+                    <tr data-order-id="<?php echo (int) $r['order_id']; ?>">
+                        <td>
+                            <a href="<?php echo esc_url( get_edit_post_link( $r['order_id'] ) ); ?>" target="_blank">#<?php echo (int) $r['order_id']; ?></a>
+                        </td>
+                        <td><?php echo esc_html( $r['evento'] ); ?></td>
+                        <td><?php echo esc_html( $r['fecha'] ); ?></td>
+                        <td><?php echo 'bo' === $r['canal'] ? 'Box Office' : 'Web'; ?></td>
+                        <td>$<?php echo number_format( $r['monto'], 0, ',', '.' ); ?></td>
+                        <td><?php echo esc_html( $r['nombre'] ); ?></td>
+                        <td><?php echo esc_html( $r['telefono'] ); ?></td>
+                        <td><?php echo esc_html( $r['nota'] ); ?></td>
+                        <td>
+                            <select class="ss-sin-origen-select" style="width:140px">
+                                <option value="">— Elegir —</option>
+                                <option value="meta_ads">Meta Ads</option>
+                                <option value="whatsapp">WhatsApp</option>
+                                <option value="instagram">Instagram</option>
+                                <option value="referido">Referido</option>
+                                <option value="organico">Orgánico</option>
+                                <option value="otro">Otro…</option>
+                            </select>
+                            <input type="text" class="ss-sin-origen-detail" placeholder="Detalle" style="width:110px;display:none">
+                            <button type="button" class="button button-small ss-sin-origen-save">Guardar</button>
+                            <span class="ss-sin-origen-msg" style="font-size:12px;margin-left:4px"></span>
+                        </td>
+                    </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+
+        <script>
+        (function(){
+            var nonce   = '<?php echo esc_js( $nonce ); ?>';
+            var ajaxUrl = '<?php echo esc_js( admin_url( 'admin-ajax.php' ) ); ?>';
+            var table   = document.getElementById('ss-sin-origen-table');
+            if (!table) { return; }
+
+            table.addEventListener('change', function(e){
+                if (e.target.classList.contains('ss-sin-origen-select')) {
+                    var detail = e.target.closest('tr').querySelector('.ss-sin-origen-detail');
+                    detail.style.display = (e.target.value === 'otro') ? 'inline-block' : 'none';
+                }
+            });
+
+            table.addEventListener('click', function(e){
+                if (!e.target.classList.contains('ss-sin-origen-save')) { return; }
+                var row    = e.target.closest('tr');
+                var orderId = row.getAttribute('data-order-id');
+                var origen  = row.querySelector('.ss-sin-origen-select').value;
+                var detalle = row.querySelector('.ss-sin-origen-detail').value.trim();
+                var msg     = row.querySelector('.ss-sin-origen-msg');
+                if (!origen) {
+                    msg.style.color = '#dc2626';
+                    msg.textContent = 'Elegí un origen.';
+                    return;
+                }
+                e.target.disabled = true;
+                msg.style.color = '#6b7280';
+                msg.textContent = 'Guardando...';
+                var fd = new FormData();
+                fd.append('action',   'ss_admin_update_sale_origin');
+                fd.append('nonce',    nonce);
+                fd.append('order_id', orderId);
+                fd.append('origen',   origen);
+                fd.append('detalle',  detalle);
+                fetch(ajaxUrl, { method: 'POST', body: fd })
+                    .then(function(r){ return r.json(); })
+                    .then(function(resp){
+                        e.target.disabled = false;
+                        if (resp.success) {
+                            msg.style.color = '#059669';
+                            msg.textContent = 'Guardado ✓';
+                            row.style.opacity = '0.5';
+                        } else {
+                            msg.style.color = '#dc2626';
+                            msg.textContent = 'Error: ' + resp.data;
+                        }
+                    })
+                    .catch(function(){
+                        e.target.disabled = false;
+                        msg.style.color = '#dc2626';
+                        msg.textContent = 'Error de red.';
+                    });
+            });
+        })();
+        </script>
+    </div>
+    <?php
+}
+
+add_action( 'wp_ajax_ss_admin_update_sale_origin', 'ss_ajax_admin_update_sale_origin' );
+function ss_ajax_admin_update_sale_origin(): void {
+    check_ajax_referer( 'ss_ventas_sin_origen', 'nonce' );
+    if ( ! current_user_can( 'manage_woocommerce' ) ) {
+        wp_send_json_error( 'Sin permiso.' );
+    }
+
+    $order_id = absint( $_POST['order_id'] ?? 0 );
+    $origen   = sanitize_text_field( wp_unslash( $_POST['origen'] ?? '' ) );
+    $detalle  = sanitize_text_field( wp_unslash( $_POST['detalle'] ?? '' ) );
+
+    $origenes_validos = array( 'meta_ads', 'whatsapp', 'instagram', 'referido', 'organico', 'otro' );
+    if ( ! in_array( $origen, $origenes_validos, true ) ) {
+        wp_send_json_error( 'Origen inválido.' );
+    }
+
+    $order = wc_get_order( $order_id );
+    if ( ! $order ) {
+        wp_send_json_error( 'Pedido no encontrado.' );
+    }
+
+    $order->update_meta_data( '_ss_bo_sale_origin', $origen );
+    if ( 'otro' === $origen && '' !== $detalle ) {
+        $order->update_meta_data( '_ss_bo_sale_origin_detail', $detalle );
+    } else {
+        $order->delete_meta_data( '_ss_bo_sale_origin_detail' );
+    }
+    $order->save();
+
+    wp_send_json_success( array( 'order_id' => $order_id, 'origen' => $origen ) );
+}
 
 function ss_boxoffice_settings_page(): void {
     if ( ! current_user_can( 'manage_options' ) ) { return; }

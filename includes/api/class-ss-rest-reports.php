@@ -418,6 +418,17 @@ class SS_REST_Reports {
         if ( '' === $origen ) {
             $origen = (string) $order->get_meta( '_ss_utm_source' );
         }
+        // Último fallback: corrección manual retroactiva desde "Ventas sin origen"
+        // (admin), que guarda en _ss_bo_sale_origin sin importar el canal.
+        if ( '' === $origen ) {
+            $origen = (string) $order->get_meta( '_ss_bo_sale_origin' );
+            if ( $origen === 'otro' ) {
+                $detalle = (string) $order->get_meta( '_ss_bo_sale_origin_detail' );
+                if ( $detalle !== '' ) {
+                    $origen = $detalle;
+                }
+            }
+        }
         $utm_medium = (string) $order->get_meta( '_wc_order_attribution_utm_medium' );
         if ( '' === $utm_medium ) {
             $utm_medium = (string) $order->get_meta( '_ss_utm_medium' );
