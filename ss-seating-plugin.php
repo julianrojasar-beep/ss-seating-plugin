@@ -3,7 +3,7 @@
  * Plugin Name: SS Seating
  * Plugin URI: https://tusitio.com
  * Description: Sistema de selección de sillas y venta de boletas con QR para eventos.
- * Version: 1.3.37
+ * Version: 1.3.38
  * Author: Julian Rojas
  * Author URI: https://tusitio.com
  * License: GPL v2 or later
@@ -1597,16 +1597,39 @@ function ss_ajax_save_seats_to_session(): void {
 // ── Pedidos de eventos SS van directo a "completado" (sin email de "procesando") ──
 add_filter( 'woocommerce_payment_complete_order_status', 'ss_event_order_complete_status', 10, 3 );
 
+/**
+ * Un pedido de evento en $0 (o negativo) que NO vino de Box Office es
+ * sospechoso: ticket type mal guardado, descuento/cupón mal configurado, o
+ * un intento de explotar el checkout — sin importar cuál de esos caminos lo
+ * llevó a $0. Las cortesías reales se venden por Box Office con el método
+ * "cortesia" (`_ss_boxoffice_sale = yes`), nunca por el checkout público.
+ */
+function ss_event_order_is_unauthorized_zero( \WC_Order $order ): bool {
+    return $order->get_total() <= 0 && $order->get_meta( '_ss_boxoffice_sale' ) !== 'yes';
+}
+
 function ss_event_order_complete_status( string $status, int $order_id, $order = null ): string {
     if ( ! $order ) { $order = wc_get_order( $order_id ); }
     if ( ! $order ) { return $status; }
 
+    $is_event_order = false;
     foreach ( $order->get_items() as $item ) {
         if ( $item->get_meta( 'ss_event_id' ) || $item->get_meta( 'ss_zone' ) || $item->get_meta( 'ss_seats' ) ) {
-            return 'completed';
+            $is_event_order = true;
+            break;
         }
     }
-    return $status;
+    if ( ! $is_event_order ) {
+        return $status;
+    }
+
+    // No autocompletar: queda "en espera" para revisión manual, sin Seat
+    // Ledger ni QR (esos solo se disparan en processing/completed).
+    if ( ss_event_order_is_unauthorized_zero( $order ) ) {
+        return 'on-hold';
+    }
+
+    return 'completed';
 }
 
 add_action( 'wp_ajax_ss_add_to_cart',        'ss_ajax_add_to_cart' );
@@ -1623,10 +1646,10 @@ function ss_ajax_add_to_cart(): void {
         wp_send_json_error( array( 'message' => 'Producto no encontrado.' ) );
     }
 
-    // Bloquear eventos pasados antes de cualquier otra validación
+    // Bloquear eventos pasados o sin fecha registrada antes de cualquier otra validación
     if ( $event_id > 0 ) {
         $event_date = get_post_meta( $event_id, '_ss_event_date', true );
-        if ( $event_date && $event_date < current_time( 'Y-m-d' ) ) {
+        if ( ! $event_date || $event_date < current_time( 'Y-m-d' ) ) {
             wp_send_json_error( array( 'message' => 'Este evento ya finalizó.' ) );
         }
     }
@@ -1814,20 +1837,22 @@ function ss_seating_require_seats_validation($passed, $product_id, $quantity) {
     } elseif (!empty($_POST['event_id'])) {
         $event_id = (int) $_POST['event_id'];
     }
-
-    // Bloquear eventos pasados
-    if ( $event_id > 0 ) {
-        $event_date = get_post_meta( $event_id, '_ss_event_date', true );
-        if ( $event_date && $event_date < current_time( 'Y-m-d' ) ) {
-            wc_add_notice( 'Este evento ya finalizó y no acepta nuevas compras.', 'error' );
-            return false;
-        }
-    }
-    // Fallback: producto oculto vinculado a ss_event
+    // Fallback: producto oculto vinculado a ss_event. Se resuelve ANTES del
+    // chequeo de fecha para que un add-to-cart sin esos parámetros POST
+    // (request directo/manipulado) no se salte la validación de evento vencido.
     if ( ! $event_id && $product_id > 0 ) {
         $linked = (int) get_post_meta( $product_id, '_ss_event_id', true );
         if ( $linked > 0 ) {
             $event_id = $linked;
+        }
+    }
+
+    // Bloquear eventos pasados o sin fecha registrada
+    if ( $event_id > 0 ) {
+        $event_date = get_post_meta( $event_id, '_ss_event_date', true );
+        if ( ! $event_date || $event_date < current_time( 'Y-m-d' ) ) {
+            wc_add_notice( 'Este evento ya finalizó y no acepta nuevas compras.', 'error' );
+            return false;
         }
     }
 
@@ -1930,14 +1955,21 @@ function ss_make_event_product_purchasable( $is_purchasable, $product ) {
         return $is_purchasable;
     }
     $linked_event = (int) get_post_meta( $product->get_id(), '_ss_event_id', true );
-    if ( $linked_event > 0 && get_post_type( $linked_event ) === 'ss_event' && get_post_status( $linked_event ) === 'publish' ) {
-        $event_date = get_post_meta( $linked_event, '_ss_event_date', true );
-        if ( $event_date && $event_date < current_time( 'Y-m-d' ) ) {
-            return false; // Evento pasado — bloquear compra
-        }
-        return true;
+    if ( $linked_event <= 0 || get_post_type( $linked_event ) !== 'ss_event' ) {
+        return $is_purchasable;
     }
-    return $is_purchasable;
+    // Evento no publicado (borrador/papelera/privado) — bloquear compra siempre,
+    // sin caer de vuelta al valor por defecto de WooCommerce (que sería "comprable").
+    if ( get_post_status( $linked_event ) !== 'publish' ) {
+        return false;
+    }
+    // Sin fecha registrada o evento vencido — bloquear compra. Una fecha vacía
+    // ya NO se interpreta como "sin límite": se trata como evento cerrado.
+    $event_date = get_post_meta( $linked_event, '_ss_event_date', true );
+    if ( ! $event_date || $event_date < current_time( 'Y-m-d' ) ) {
+        return false;
+    }
+    return true;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2158,7 +2190,9 @@ function ss_seating_set_dynamic_price( WC_Cart $cart ): void {
                 }
             }
         }
-        if ( $price === null || ! isset( $item['data'] ) || ! ( $item['data'] instanceof WC_Product ) ) {
+        // Nunca aplicar un precio <= 0 (ticket type mal guardado, preventa sin precio, etc.):
+        // mejor dejar el precio placeholder del producto que regalar una entrada por error de datos.
+        if ( $price === null || $price <= 0 || ! isset( $item['data'] ) || ! ( $item['data'] instanceof WC_Product ) ) {
             continue;
         }
 
@@ -3322,6 +3356,13 @@ function ss_email_qr_display( $order, bool $sent_to_admin, bool $plain_text, $em
     }
     $order_id = $order->get_id();
     if ( ! ss_order_has_event_items( $order_id ) ) {
+        return;
+    }
+    // Este hook corre en CUALQUIER email de WooCommerce que incluya la tabla
+    // del pedido (Nuevo pedido al admin, En espera, Procesando, Completado...),
+    // no solo en el de "completado". Un pedido retenido (p. ej. por el guard
+    // de $0 sin Box Office) nunca debe mostrar un QR, aunque sea al admin.
+    if ( ! $order->has_status( array( 'processing', 'completed' ) ) ) {
         return;
     }
     $token = get_post_meta( $order_id, '_ss_checkin_token', true );
@@ -4563,6 +4604,50 @@ function ss_leads_create_table(): void {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// SINCRONIZACIÓN DIARIA: EVENTOS VENCIDOS → PRODUCTO NO COMPRABLE
+// Defensa en profundidad: SS_Event_CPT::sync_product_commercial_status() ya
+// corre al guardar un evento, pero un evento vencido en el que nadie vuelve
+// a entrar nunca dispara ese hook — este cron cubre ese caso.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+add_action( 'wp', 'ss_expired_events_sync_schedule' );
+
+function ss_expired_events_sync_schedule(): void {
+    if ( ! wp_next_scheduled( 'ss_expired_events_sync_daily' ) ) {
+        wp_schedule_event( time(), 'daily', 'ss_expired_events_sync_daily' );
+    }
+}
+
+register_deactivation_hook( __FILE__, 'ss_expired_events_sync_unschedule' );
+
+function ss_expired_events_sync_unschedule(): void {
+    $timestamp = wp_next_scheduled( 'ss_expired_events_sync_daily' );
+    if ( $timestamp ) {
+        wp_unschedule_event( $timestamp, 'ss_expired_events_sync_daily' );
+    }
+}
+
+add_action( 'ss_expired_events_sync_daily', 'ss_expired_events_sync_run' );
+
+function ss_expired_events_sync_run(): void {
+    if ( ! class_exists( 'SS_Event_CPT' ) ) {
+        return;
+    }
+    $event_ids = get_posts( array(
+        'post_type'      => 'ss_event',
+        'post_status'    => 'any',
+        'posts_per_page' => -1,
+        'fields'         => 'ids',
+        'meta_query'     => array(
+            array( 'key' => '_ss_product_id', 'compare' => 'EXISTS' ),
+        ),
+    ) );
+    foreach ( $event_ids as $event_id ) {
+        SS_Event_CPT::sync_product_commercial_status( $event_id );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // LIMPIEZA AUTOMÁTICA DE QR ANTIGUOS
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -5141,11 +5226,19 @@ function ss_auto_complete_event_orders( int $order_id ): void {
         }
     }
 
-    if ( $has_event ) {
-        $order->set_status( 'completed', 'Auto-completado: pedido de evento SS.' );
-        $order->save();
-        if ( SS_SEATING_DEBUG ) { error_log( '[ss-seating] AUTO-COMPLETE order #' . $order_id ); }
+    if ( ! $has_event ) {
+        return;
     }
+
+    if ( ss_event_order_is_unauthorized_zero( $order ) ) {
+        $order->add_order_note( 'Pedido de evento en $0 sin venir de Box Office — no se auto-completa, queda retenido para revisión manual.' );
+        if ( SS_SEATING_DEBUG ) { error_log( '[ss-seating] Pedido #' . $order_id . ' en $0 sin Box Office — NO auto-completado.' ); }
+        return;
+    }
+
+    $order->set_status( 'completed', 'Auto-completado: pedido de evento SS.' );
+    $order->save();
+    if ( SS_SEATING_DEBUG ) { error_log( '[ss-seating] AUTO-COMPLETE order #' . $order_id ); }
 }
 
 // ── Validación transaccional en checkout ──────────────────────────────────────

@@ -37,3 +37,6 @@ build.ps1
 
 # Guía interna para Claude Code
 CLAUDE.md
+
+# Vault de Obsidian (contexto/documentación interna, no es parte del plugin)
+vault/

@@ -707,9 +707,16 @@ class SS_Event_Admin {
             if ( $zone === '' ) {
                 continue;
             }
+            $price = isset( $tt['price'] ) ? (float) $tt['price'] : 0;
+            // Precio vacío/0 por error de UI o fila sin completar: no persistir un
+            // tipo de entrada gratuito por accidente. Cortesías se manejan desde
+            // Box Office (método "cortesía"), no desde el precio del evento.
+            if ( $price <= 0 ) {
+                continue;
+            }
             $ticket_types[] = array(
                 'zone'          => $zone,
-                'price'         => isset( $tt['price'] ) ? max( 0, (float) $tt['price'] ) : 0,
+                'price'         => $price,
                 'presale_price' => isset( $tt['presale_price'] ) ? max( 0, (float) $tt['presale_price'] ) : 0,
                 'capacity'      => isset( $tt['capacity'] ) ? max( 0, (int) $tt['capacity'] ) : 0,
             );

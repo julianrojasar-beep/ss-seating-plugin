@@ -45,10 +45,13 @@ class SS_Event_CPT {
         if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
             return;
         }
-        if ( $post->post_status !== 'publish' ) {
+        if ( ! function_exists( 'wc_get_product' ) ) {
             return;
         }
-        if ( ! function_exists( 'wc_get_product' ) ) {
+        if ( $post->post_status !== 'publish' ) {
+            // Evento no publicado (borrador/papelera/pendiente): si ya tiene
+            // producto vinculado, asegurar que no quede público ni comprable.
+            self::sync_product_commercial_status( $post_id );
             return;
         }
 
@@ -62,6 +65,7 @@ class SS_Event_CPT {
                 self::sync_product_image( $post_id, $existing );
                 self::sync_product_description( $post_id, $post, $existing );
                 $existing->save();
+                self::sync_product_commercial_status( $post_id, $existing );
                 return;
             }
             // Producto inválido — limpiar meta y crear uno nuevo
@@ -95,6 +99,42 @@ class SS_Event_CPT {
         // Vincular evento ↔ producto
         update_post_meta( $post_id, '_ss_product_id', $product_id );
         update_post_meta( $product_id, '_ss_event_id', $post_id );
+
+        self::sync_product_commercial_status( $post_id, $product );
+    }
+
+    /**
+     * Pone el producto vinculado en 'publish' solo si el evento está
+     * publicado y tiene una fecha registrada que no haya pasado. En
+     * cualquier otro caso (borrador, papelera, sin fecha, fecha vencida)
+     * lo pasa a 'private' para que no quede accesible como página pública
+     * ni comprable, sin depender de que alguien reedite el evento a mano.
+     */
+    public static function sync_product_commercial_status( int $event_id, ?\WC_Product $product = null ): void {
+        if ( ! function_exists( 'wc_get_product' ) ) {
+            return;
+        }
+        if ( ! $product ) {
+            $product_id = (int) get_post_meta( $event_id, '_ss_product_id', true );
+            if ( ! $product_id ) {
+                return;
+            }
+            $product = wc_get_product( $product_id );
+        }
+        if ( ! $product ) {
+            return;
+        }
+
+        $event_date = get_post_meta( $event_id, '_ss_event_date', true );
+        $is_active  = get_post_status( $event_id ) === 'publish'
+            && $event_date
+            && $event_date >= current_time( 'Y-m-d' );
+
+        $target_status = $is_active ? 'publish' : 'private';
+        if ( $product->get_status() !== $target_status ) {
+            $product->set_status( $target_status );
+            $product->save();
+        }
     }
 
     /**
