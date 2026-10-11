@@ -387,7 +387,7 @@ class SS_REST_Reports {
      * cuando WC no tiene el dato. Ver CLAUDE.md, "Atribución de Meta Ads".
      * Reutilizado por el reporte REST y por el Cierre Contable.
      *
-     * @return array { origen, utm_medium, utm_campaign, fbclid, utm_content, utm_term, utm_id, device_type, referrer }
+     * @return array { origen, utm_medium, utm_campaign, fbclid, utm_content, utm_term, utm_id, device_type, referrer, fuente_confirmada, ruta_compra }
      */
     public static function get_order_attribution( \WC_Order $order, bool $is_bo ): array {
         if ( $is_bo ) {
@@ -400,23 +400,33 @@ class SS_REST_Reports {
                     $origen = $detalle;
                 }
             }
+            $fuente_confirmada = ( '' === $origen ) ? 'desconocido' : 'confirmado_boxoffice_o_manual';
             return array(
-                'origen'       => $origen,
-                'utm_medium'   => '',
-                'utm_campaign' => '',
-                'fbclid'       => '',
+                'origen'             => $origen,
+                'utm_medium'         => '',
+                'utm_campaign'       => '',
+                'fbclid'             => '',
                 // Box Office no tiene sesión web ni WC Order Attribution: sin fuente posible.
-                'utm_content'  => '',
-                'utm_term'     => '',
-                'utm_id'       => '',
-                'device_type'  => '',
-                'referrer'     => '',
+                'utm_content'        => '',
+                'utm_term'           => '',
+                'utm_id'             => '',
+                'device_type'        => '',
+                'referrer'           => '',
+                'fuente_confirmada'  => $fuente_confirmada,
+                'ruta_compra'        => self::compute_ruta_compra( $origen, '', true ),
             );
         }
 
-        $origen = (string) $order->get_meta( '_wc_order_attribution_utm_source' );
+        $origen            = (string) $order->get_meta( '_wc_order_attribution_utm_source' );
+        $fuente_confirmada = '';
+        if ( '' !== $origen ) {
+            $fuente_confirmada = 'confirmado_wc_nativo';
+        }
         if ( '' === $origen ) {
             $origen = (string) $order->get_meta( '_ss_utm_source' );
+            if ( '' !== $origen ) {
+                $fuente_confirmada = 'confirmado_plugin_propio';
+            }
         }
         // Último fallback: corrección manual retroactiva desde "Ventas sin origen"
         // (admin), que guarda en _ss_bo_sale_origin sin importar el canal.
@@ -428,6 +438,12 @@ class SS_REST_Reports {
                     $origen = $detalle;
                 }
             }
+            if ( '' !== $origen ) {
+                $fuente_confirmada = 'confirmado_boxoffice_o_manual';
+            }
+        }
+        if ( '' === $origen ) {
+            $fuente_confirmada = 'desconocido';
         }
         $utm_medium = (string) $order->get_meta( '_wc_order_attribution_utm_medium' );
         if ( '' === $utm_medium ) {
@@ -455,16 +471,47 @@ class SS_REST_Reports {
         $utm_id = self::get_utm_param_from_referrer( $referrer, 'utm_id' );
 
         return array(
-            'origen'       => $origen,
-            'utm_medium'   => $utm_medium,
-            'utm_campaign' => $utm_campaign,
-            'fbclid'       => (string) $order->get_meta( '_ss_fbclid' ),
-            'utm_content'  => $utm_content,
-            'utm_term'     => $utm_term,
-            'utm_id'       => $utm_id,
-            'device_type'  => (string) $order->get_meta( '_wc_order_attribution_device_type' ),
-            'referrer'     => $referrer,
+            'origen'            => $origen,
+            'utm_medium'        => $utm_medium,
+            'utm_campaign'      => $utm_campaign,
+            'fbclid'            => (string) $order->get_meta( '_ss_fbclid' ),
+            'utm_content'       => $utm_content,
+            'utm_term'          => $utm_term,
+            'utm_id'            => $utm_id,
+            'device_type'       => (string) $order->get_meta( '_wc_order_attribution_device_type' ),
+            'referrer'          => $referrer,
+            'fuente_confirmada' => $fuente_confirmada,
+            'ruta_compra'       => self::compute_ruta_compra( $origen, $utm_medium, false ),
         );
+    }
+
+    /**
+     * Clasifica la ruta de compra en el catálogo cerrado SR01/SR02/SR03_candidata/
+     * organica/taquilla_directa/desconocida, a partir de campos que ya existen
+     * (origen, canal, utm_medium) — no requiere capturar nada nuevo en checkout ni
+     * Box Office. Ver vault/Decisiones/2026-10-11-modelo-atribucion-sr01-03.md.
+     *
+     * SR03_candidata (no SR03 a secas): Meta Ads cerrado en taquilla no prueba que
+     * hubo un contacto por WhatsApp intermedio — no existe hoy ningún campo que lo
+     * confirme, así que no se afirma la ruta completa, solo se conserva la señal.
+     */
+    private static function compute_ruta_compra( string $origen, string $utm_medium, bool $is_bo ): string {
+        $origen_n = strtolower( trim( $origen ) );
+        $is_meta  = in_array( $origen_n, array( 'facebook', 'meta', 'meta_ads', 'fb' ), true );
+
+        if ( $is_bo ) {
+            return $is_meta ? 'SR03_candidata' : 'taquilla_directa';
+        }
+
+        if ( $is_meta ) {
+            $medium_n    = strtolower( trim( $utm_medium ) );
+            $is_whatsapp = ( 'chat' === $medium_n )
+                || ( false !== strpos( $medium_n, 'whatsapp' ) )
+                || ( false !== strpos( $origen_n, 'whatsapp' ) );
+            return $is_whatsapp ? 'SR02' : 'SR01';
+        }
+
+        return ( '' !== $origen_n ) ? 'organica' : 'desconocida';
     }
 
     /**
@@ -658,6 +705,8 @@ class SS_REST_Reports {
             $fbclid       = $attribution['fbclid'];
             $device_type  = $attribution['device_type'];
             $referrer     = $attribution['referrer'];
+            $ruta_compra       = $attribution['ruta_compra'];
+            $fuente_confirmada = $attribution['fuente_confirmada'];
             $descuento    = self::get_order_discount_info( $order, $is_bo, $valor );
             $mp_financials = SS_Mercadopago::get_order_financials( $order );
 
@@ -757,6 +806,9 @@ class SS_REST_Reports {
                 'retencion_ica'    => $mp_financials['retencion_ica'],
                 'retencion_fuente' => $mp_financials['retencion_fuente'],
                 'neto_recibido'    => $mp_financials['neto_recibido'],
+                // ── Modelo de atribución SR01-03 (ver vault/Decisiones/2026-10-11-modelo-atribucion-sr01-03.md) ──
+                'ruta_compra'       => $ruta_compra,
+                'fuente_confirmada' => $fuente_confirmada,
             );
 
             if ( $fecha_creacion ) {
