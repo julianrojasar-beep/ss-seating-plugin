@@ -39,4 +39,7 @@ build.ps1
 CLAUDE.md
 
 # Vault de Obsidian (contexto/documentación interna, no es parte del plugin)
+# En esta máquina la carpeta real se llama "PLUGIN", no "vault" — se ignoran
+# los dos nombres para no depender de que coincidan.
 vault/
+PLUGIN/

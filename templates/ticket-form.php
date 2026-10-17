@@ -16,11 +16,26 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 // ── Datos extra del evento ──
 $post_obj = get_post( $event_id );
 
-// Hero image: _ss_event_hero → fallback a post thumbnail
-$hero_id   = (int) get_post_meta( $event_id, '_ss_event_hero', true );
-$thumbnail = $hero_id ? wp_get_attachment_image_url( $hero_id, 'large' ) : '';
+// Hero image: _ss_event_hero → fallback a post thumbnail.
+// wp_get_attachment_image_src() (no solo la URL) para tener width/height reales
+// y ponerlos como atributos del <img> — así el navegador reserva el espacio
+// correcto desde el primer frame, sin esperar a que cargue el CSS
+// (evita el "flash" de la imagen a su tamaño nativo en píxeles antes del
+// width:100% — justo lo que se veía en algunos eventos).
+$hero_id        = (int) get_post_meta( $event_id, '_ss_event_hero', true );
+$thumbnail      = '';
+$thumbnail_w    = 0;
+$thumbnail_h    = 0;
+$hero_src       = $hero_id ? wp_get_attachment_image_src( $hero_id, 'large' ) : false;
+if ( $hero_src ) {
+    list( $thumbnail, $thumbnail_w, $thumbnail_h ) = $hero_src;
+}
 if ( ! $thumbnail ) {
-    $thumbnail = get_the_post_thumbnail_url( $event_id, 'large' );
+    $fallback_id = get_post_thumbnail_id( $event_id );
+    $fallback_src = $fallback_id ? wp_get_attachment_image_src( $fallback_id, 'large' ) : false;
+    if ( $fallback_src ) {
+        list( $thumbnail, $thumbnail_w, $thumbnail_h ) = $fallback_src;
+    }
 }
 
 // Galería
@@ -116,19 +131,54 @@ $availability_summary = function_exists( 'ss_get_event_availability_summary' )
 $total_available = $availability_summary['available'];
 $is_sold_out      = ( $availability_summary['total'] > 0 && $total_available <= 0 );
 
-// Colores de sillas desde settings.
-// "Disponible" no es configurable: cada evento define su color por zona (ver
-// $zones_legend abajo); este valor solo se usa como fallback en la leyenda
-// cuando el evento no tiene ninguna zona con color propio.
-$color_available = '#4CAF50';
-$color_reserved  = SS_Settings::get( 'seat_reserved_color', '#FF9800' );
-$color_sold      = SS_Settings::get( 'seat_sold_color', '#9e9e9e' );
+// Colores de ESTADO de silla — configurables en SS Seating → Configuración →
+// Estilo (SS_Settings). La categoría comercial (cualquier zona definida por
+// el admin) ya no se indica con el color de relleno, sino con la rayita
+// inferior coloreada según el color de zona del builder (ver leyenda más
+// abajo) — mismo criterio que ss-konva-renderer.js (SEAT_COLORS).
+$color_available = SS_Settings::get( 'seat_available_color', '#64748B' );
+$color_reserved  = SS_Settings::get( 'seat_reserved_color',  '#F59E0B' );
+$color_sold      = SS_Settings::get( 'seat_sold_color',      '#F1F5F9' );
+$color_selected  = SS_Settings::get( 'seat_selected_color',  '#8B5CF6' );
+
+// Zonas con rayita de categoría propia — mismo criterio que drawSeat() en
+// ss-konva-renderer.js: el color es el que el admin le asignó a esa zona en
+// el builder (_ss_layout.zones). Sin nombres de zona hardcodeados — una zona
+// sin color propio asignado simplemente no aparece acá (ni dibuja rayita en
+// el mapa).
+$zone_colors_map = array();
+if ( ! empty( $layout['zones'] ) && is_array( $layout['zones'] ) ) {
+    foreach ( $layout['zones'] as $z ) {
+        if ( ! empty( $z['id'] ) ) {
+            $zone_colors_map[ $z['id'] ] = $z['color'] ?? '';
+        }
+    }
+}
+$category_zones = array(); // zone_name => accent_color
+foreach ( $ticket_types as $tt_check ) {
+    $zname = trim( $tt_check['zone'] ?? '' );
+    if ( $zname === '' || isset( $category_zones[ $zname ] ) ) {
+        continue;
+    }
+    $accent = $zone_colors_map[ $zname ] ?? '';
+    if ( $accent === '' ) {
+        continue; // sin color asignado todavía — el mapa tampoco dibuja rayita para esta zona
+    }
+    $category_zones[ $zname ] = $accent;
+}
+// ¿Hay alguna zona de este evento sin color asignado? (para el ejemplo "sin
+// categoría" en la leyenda — genérico, no un nombre de zona hardcodeado).
+$has_uncategorized_zone = false;
+foreach ( $ticket_types as $tt_check ) {
+    $zname = trim( $tt_check['zone'] ?? '' );
+    if ( $zname !== '' && ! isset( $category_zones[ $zname ] ) ) {
+        $has_uncategorized_zone = true;
+        break;
+    }
+}
 ?>
 
-<div class="tk-loader" id="ss-loader">
-    <div class="tk-loader__spinner"></div>
-</div>
-<div class="tk-root ss-ticket-form" style="opacity:0"
+<div class="tk-root ss-ticket-form"
      data-event-id="<?php echo esc_attr( $event_id ); ?>"
      data-product-id="<?php echo esc_attr( $product_id ); ?>">
 
@@ -138,7 +188,7 @@ $color_sold      = SS_Settings::get( 'seat_sold_color', '#9e9e9e' );
     $slides = array();
     if ( $thumbnail ) {
         $hero_full = $hero_id ? wp_get_attachment_image_url( $hero_id, 'full' ) : get_the_post_thumbnail_url( $event_id, 'full' );
-        $slides[] = array( 'large' => $thumbnail, 'full' => $hero_full ?: $thumbnail );
+        $slides[] = array( 'large' => $thumbnail, 'full' => $hero_full ?: $thumbnail, 'w' => $thumbnail_w, 'h' => $thumbnail_h );
     }
     foreach ( $gallery_ids as $att_id ) {
         $large = wp_get_attachment_image_url( $att_id, 'large' );
@@ -156,6 +206,10 @@ $color_sold      = SS_Settings::get( 'seat_sold_color', '#9e9e9e' );
         <img class="hero__image" id="ss-hero-img"
              src="<?php echo esc_url( $slides[0]['large'] ); ?>"
              data-full="<?php echo esc_url( $slides[0]['full'] ); ?>"
+             <?php if ( ! empty( $slides[0]['w'] ) && ! empty( $slides[0]['h'] ) ) : ?>
+             width="<?php echo esc_attr( $slides[0]['w'] ); ?>"
+             height="<?php echo esc_attr( $slides[0]['h'] ); ?>"
+             <?php endif; ?>
              alt="<?php echo esc_attr( $event['title'] ); ?>">
         <div class="hero__overlay">
             <div class="hero__content">
@@ -239,62 +293,105 @@ $color_sold      = SS_Settings::get( 'seat_sold_color', '#9e9e9e' );
     <!-- ═══ MAIN LAYOUT: CSS Grid 1fr 340px ═══ -->
     <div class="main-layout">
 
-        <!-- ── Izquierda: descripción + mapa ── -->
+        <!-- ── Izquierda: mapa + descripción ── -->
         <div class="seat-map-wrapper">
 
-            <!-- Descripción arriba del mapa -->
-            <?php if ( $has_description ) : ?>
-            <div class="description-block">
-                <p class="section-label">Acerca de este evento</p>
-                <div class="description-block__body">
-                    <?php echo wp_kses_post( $description ); ?>
-                </div>
-            </div>
-            <?php endif; ?>
-
-            <!-- Mapa de asientos -->
+            <!-- Mapa de asientos: va primero — lo que la persona debe ver y poder
+                 usar de inmediato sin tener que pasar la descripción -->
             <?php if ( $has_map ) : ?>
             <p class="section-label"><?php echo $sale_mode === 'general' ? 'Mapa del evento' : 'Selecciona tus asientos'; ?></p>
             <div class="seat-map-container">
                 <div id="ss-floor-tabs-frontend" style="display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap;align-items:center;min-height:24px;"></div>
-                <div id="ss-konva-container"></div>
 
-                <!-- Leyenda -->
+                <!-- Wrapper propio para que los controles/hint se posicionen contra el
+                     borde del CANVAS, no contra toda la tarjeta (que incluye la leyenda
+                     debajo) — #ss-konva-container se vacía entero en cada cambio de piso,
+                     así que los controles viven afuera de él, acá, para sobrevivir eso. -->
+                <div class="ss-map-canvas-wrap">
+                    <div id="ss-konva-container"></div>
+                    <!-- Loader acotado SOLO al mapa (no a toda la página — ver el script al
+                         final, escucha "ss:konva-ready"). Antes toda la página quedaba en
+                         opacity:0 hasta window.load completo, lo que hacía que Chrome midiera
+                         el LCP del hero como si tardara lo mismo que cargar Konva entero. -->
+                    <div class="ss-map-loader" id="ss-map-loader">
+                        <div class="tk-loader__spinner"></div>
+                    </div>
+
+                    <?php if ( $sale_mode !== 'general' ) : ?>
+                    <!-- Zoom/pan ya existían (rueda, pellizco, arrastre) pero no eran
+                         descubribles — estos botones + el hint los hacen visibles. -->
+                    <div class="ss-map-controls">
+                        <button type="button" class="ss-map-controls__btn" id="ss-map-zoom-in" aria-label="Acercar">+</button>
+                        <button type="button" class="ss-map-controls__btn" id="ss-map-zoom-out" aria-label="Alejar">&minus;</button>
+                        <button type="button" class="ss-map-controls__btn ss-map-controls__btn--fit" id="ss-map-zoom-fit" aria-label="Ver todo el mapa">
+                            <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/></svg>
+                        </button>
+                    </div>
+                    <div class="ss-map-nav-hint" id="ss-map-nav-hint">
+                        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+                        Pellizca o usa los botones para moverte por el mapa
+                    </div>
+                    <?php endif; ?>
+                </div>
+
+                <!-- Leyenda: Estado (relleno) + Categoría comercial (rayita inferior,
+                     color = el que le asignaste a la zona en el builder), dos conceptos
+                     independientes — ver ss-konva-renderer.js SEAT_COLORS / drawSeat(). -->
                 <?php if ( $sale_mode !== 'general' ) : ?>
                 <div class="legend">
-                    <?php
-                    $zones_legend = array();
-                    if ( ! empty( $layout['zones'] ) && is_array( $layout['zones'] ) ) {
-                        foreach ( $layout['zones'] as $z ) {
-                            if ( ! empty( $z['id'] ) && ! empty( $z['color'] ) ) {
-                                $zones_legend[ $z['id'] ] = $z['color'];
-                            }
-                        }
-                    }
-                    ?>
-                    <?php if ( ! empty( $zones_legend ) ) : ?>
-                        <?php foreach ( $zones_legend as $zone_name => $zone_color ) : ?>
-                        <div class="legend-item">
-                            <span class="legend-dot" style="background:<?php echo esc_attr( $zone_color ); ?>;"></span>
-                            <span><?php echo esc_html( $zone_name ); ?></span>
+                    <div class="legend-group">
+                        <p class="legend-group__title">Estado</p>
+                        <div class="legend-group__items">
+                            <div class="legend-item">
+                                <span class="legend-seat" style="background:<?php echo esc_attr( $color_available ); ?>;"></span>
+                                <span>Disponible</span>
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-seat" style="background:<?php echo esc_attr( $color_reserved ); ?>;"></span>
+                                <span>Reservada</span>
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-seat" style="background:<?php echo esc_attr( $color_sold ); ?>;border-color:rgba(0,0,0,.15);"></span>
+                                <span>Vendida</span>
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-seat" style="background:<?php echo esc_attr( $color_selected ); ?>;border-color:#E9D5FF;"></span>
+                                <span>Seleccionada</span>
+                            </div>
                         </div>
-                        <?php endforeach; ?>
-                    <?php else : ?>
-                        <div class="legend-item">
-                            <span class="legend-dot" style="background:<?php echo esc_attr( $color_available ); ?>;"></span>
-                            <span>Disponible</span>
+                    </div>
+
+                    <?php if ( ! empty( $category_zones ) ) : ?>
+                    <div class="legend-group">
+                        <p class="legend-group__title">Zonas</p>
+                        <div class="legend-group__items">
+                            <?php foreach ( $category_zones as $zname => $accent ) : ?>
+                            <div class="legend-item">
+                                <span class="legend-seat legend-seat--accent" style="background:<?php echo esc_attr( $color_available ); ?>;--legend-accent:<?php echo esc_attr( $accent ); ?>;"></span>
+                                <span><?php echo esc_html( $zname ); ?></span>
+                            </div>
+                            <?php endforeach; ?>
+                            <?php if ( $has_uncategorized_zone ) : ?>
+                            <div class="legend-item">
+                                <span class="legend-seat" style="background:<?php echo esc_attr( $color_available ); ?>;"></span>
+                                <span>Sin categoría</span>
+                            </div>
+                            <?php endif; ?>
                         </div>
+                    </div>
                     <?php endif; ?>
-                    <div class="legend-item">
-                        <span class="legend-dot" style="background:<?php echo esc_attr( $color_reserved ); ?>;"></span>
-                        <span>Reservado</span>
-                    </div>
-                    <div class="legend-item">
-                        <span class="legend-dot" style="background:<?php echo esc_attr( $color_sold ); ?>;"></span>
-                        <span>Vendido</span>
-                    </div>
                 </div>
                 <?php endif; ?>
+            </div>
+            <?php endif; ?>
+
+            <!-- Descripción: debajo del mapa a propósito (ver orden arriba) -->
+            <?php if ( $has_description ) : ?>
+            <div class="description-block" id="ss-event-description">
+                <p class="section-label">Acerca de este evento</p>
+                <div class="description-block__body">
+                    <?php echo wp_kses_post( $description ); ?>
+                </div>
             </div>
             <?php endif; ?>
         </div>
@@ -307,6 +404,31 @@ $color_sold      = SS_Settings::get( 'seat_sold_color', '#9e9e9e' );
                 <div class="event-card__header">
                     <h2 class="event-card__title"><?php echo esc_html( $event['title'] ); ?></h2>
                 </div>
+
+                <!-- Pasos de compra -->
+                <ol class="ss-steps" aria-label="Pasos de compra">
+                    <li class="ss-steps__item" data-step="0">
+                        <span class="ss-steps__indicator">
+                            <span class="ss-steps__num">1</span>
+                            <svg class="ss-steps__check" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg>
+                        </span>
+                        <span class="ss-steps__label"><?php echo $sale_mode === 'seat' ? 'Asientos' : 'Entradas'; ?></span>
+                    </li>
+                    <li class="ss-steps__item" data-step="1">
+                        <span class="ss-steps__indicator">
+                            <span class="ss-steps__num">2</span>
+                            <svg class="ss-steps__check" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg>
+                        </span>
+                        <span class="ss-steps__label">Resumen</span>
+                    </li>
+                    <li class="ss-steps__item" data-step="2">
+                        <span class="ss-steps__indicator">
+                            <span class="ss-steps__num">3</span>
+                            <svg class="ss-steps__check" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg>
+                        </span>
+                        <span class="ss-steps__label">Pago</span>
+                    </li>
+                </ol>
 
                 <?php if ( $event_date_formatted || $event_location || $event_address ) : ?>
                 <div class="event-card__details">
@@ -360,12 +482,14 @@ $color_sold      = SS_Settings::get( 'seat_sold_color', '#9e9e9e' );
                     <?php endif; ?>
 
                     <?php foreach ( $ticket_types as $ticket ) :
-                        $zone_sold_out = ( (int) $ticket['available'] <= 0 );
+                        $zone_sold_out  = ( (int) $ticket['available'] <= 0 );
+                        $zone_accent    = $zone_colors_map[ trim( $ticket['zone'] ) ] ?? '';
                     ?>
-                    <div class="ticket-type ss-ticket-form__zone-item<?php echo $zone_sold_out ? ' ticket-type--sold-out' : ''; ?>"
+                    <div class="ticket-type ss-ticket-form__zone-item<?php echo $zone_sold_out ? ' ticket-type--sold-out' : ''; ?><?php echo $zone_accent !== '' ? ' ticket-type--accent' : ''; ?>"
                          data-zone="<?php echo esc_attr( $ticket['zone'] ); ?>"
                          data-price="<?php echo esc_attr( $ticket['effective_price'] ); ?>"
-                         data-available="<?php echo esc_attr( $ticket['available'] ); ?>">
+                         data-available="<?php echo esc_attr( $ticket['available'] ); ?>"
+                         <?php if ( $zone_accent !== '' ) : ?>style="--zone-accent:<?php echo esc_attr( $zone_accent ); ?>;"<?php endif; ?>>
                         <div class="ticket-type__info">
                             <span class="ticket-type__name">
                                 <?php echo esc_html( $ticket['zone'] ); ?>
@@ -492,6 +616,25 @@ $color_sold      = SS_Settings::get( 'seat_sold_color', '#9e9e9e' );
 
     </div><!-- .main-layout -->
 
+    <!-- ═══ COMPRA FLOTANTE: shortcut a la tarjeta de compra real, visible solo
+         mientras esta última no está en pantalla (ver ss-ticket-form.js) ═══ -->
+    <?php if ( $product_id && empty( $is_past ) && ! $is_sold_out ) : ?>
+    <div class="ss-float-buy" id="ss-float-buy" aria-hidden="true">
+        <ol class="ss-float-buy__steps" aria-hidden="true">
+            <li class="ss-float-buy__dot" data-step="0"></li>
+            <li class="ss-float-buy__dot" data-step="1"></li>
+            <li class="ss-float-buy__dot" data-step="2"></li>
+        </ol>
+        <div class="ss-float-buy__info">
+            <span class="ss-float-buy__count" id="ss-float-buy-count">0 entradas</span>
+            <span class="ss-float-buy__total" id="ss-float-buy-total">$0</span>
+        </div>
+        <button type="button" class="ss-float-buy__btn" id="ss-float-buy-btn" disabled>
+            Comprar entradas
+        </button>
+    </div>
+    <?php endif; ?>
+
     <!-- ═══ LIGHTBOX ═══ -->
     <div class="lightbox" id="ss-lightbox">
         <button type="button" class="lightbox__close" id="ss-lightbox-close">&times;</button>
@@ -596,14 +739,16 @@ $color_sold      = SS_Settings::get( 'seat_sold_color', '#9e9e9e' );
 <?php endif; ?>
 <script>
 (function(){
-    var root = document.querySelector('.tk-root');
-    var loader = document.getElementById('ss-loader');
-    function reveal() {
-        root.style.transition = 'opacity .4s ease';
-        root.style.opacity = '1';
-        if (loader) loader.style.display = 'none';
+    // El loader del mapa (no de toda la página) se apaga solo cuando el
+    // renderer Konva avisa que terminó de dibujar (evento ya existente,
+    // ss-konva-renderer.js). Si no hay mapa en este evento (modo no_map, o
+    // sale_mode sin Konva encolado), nunca llega el evento — se oculta igual
+    // a los 2s como red de seguridad.
+    var mapLoader = document.getElementById('ss-map-loader');
+    if (mapLoader) {
+        var hideMapLoader = function () { mapLoader.style.display = 'none'; };
+        document.addEventListener('ss:konva-ready', hideMapLoader, { once: true });
+        setTimeout(hideMapLoader, 2000);
     }
-    if (document.readyState === 'complete') { reveal(); }
-    else { window.addEventListener('load', reveal); }
 })();
 </script>

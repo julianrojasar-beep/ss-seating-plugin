@@ -3,7 +3,7 @@
  * Plugin Name: SS Seating
  * Plugin URI: https://tusitio.com
  * Description: Sistema de selección de sillas y venta de boletas con QR para eventos.
- * Version: 1.3.39
+ * Version: 1.4.0
  * Author: Julian Rojas
  * Author URI: https://tusitio.com
  * License: GPL v2 or later
@@ -1729,7 +1729,9 @@ function ss_ajax_add_to_cart(): void {
         if ( $added_any ) {
             wp_send_json_success( array(
                 'message'  => 'Añadido al carrito.',
-                'cart_url' => wc_get_cart_url(),
+                // Directo a checkout (no al carrito) — el nombre de la clave se deja
+                // igual para no tocar el JS que la lee (ss-ticket-form.js).
+                'cart_url' => wc_get_checkout_url(),
             ) );
         } else {
             $notices = wc_get_notices( 'error' );
@@ -1778,7 +1780,9 @@ function ss_ajax_add_to_cart(): void {
     if ( $cart_key ) {
         wp_send_json_success( array(
             'message'  => 'Añadido al carrito.',
-            'cart_url' => wc_get_cart_url(),
+            // Directo a checkout (no al carrito) — el nombre de la clave se deja
+            // igual para no tocar el JS que la lee (ss-ticket-form.js).
+            'cart_url' => wc_get_checkout_url(),
             'cart_key' => $cart_key,
         ) );
     } else {
@@ -4397,7 +4401,7 @@ function ss_control_ingreso_render( string $state, int $event_id, string $token 
                 </details>
             </div>
         </div>
-        <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+        <script src="<?php echo esc_url( plugin_dir_url( __FILE__ ) . 'lib/html5-qrcode/html5-qrcode.min.js' ); ?>"></script>
         <script>
             var ssCheckinFrontend = {
                 ajaxUrl:  '<?php echo esc_js( admin_url( 'admin-ajax.php' ) ); ?>',
@@ -5474,17 +5478,29 @@ function ss_seats_read( int $event_id ): array {
  * No depende del ledger. Busca en order item meta 'ss_seats'.
  */
 function ss_seats_read_from_orders( int $event_id ): array {
-    if ( ! function_exists( 'wc_get_orders' ) ) { return array(); }
+    if ( ! function_exists( 'wc_get_orders' ) || ! $event_id ) { return array(); }
 
-    $sold = array();
-    $orders = wc_get_orders( array(
-        'limit'  => -1,
-        'status' => array( 'processing', 'completed' ),
+    // Antes traía TODOS los pedidos processing/completed del sitio entero
+    // (wc_get_orders(['limit'=>-1])) y descartaba en PHP los que no eran de
+    // este evento — un full-scan que crece con cada pedido nuevo en todo el
+    // sitio, no solo con los de este evento. ss_event_id siempre vive en
+    // order itemmeta (no siempre en order meta, pedidos previos a v1.3.7),
+    // mismo patrón ya usado en Cierre Contable — acota la query ANTES de
+    // cargar cada WC_Order.
+    global $wpdb;
+    $order_ids = $wpdb->get_col( $wpdb->prepare(
+        "SELECT DISTINCT oi.order_id
+         FROM {$wpdb->prefix}woocommerce_order_items AS oi
+         INNER JOIN {$wpdb->prefix}woocommerce_order_itemmeta AS oim
+             ON oi.order_item_id = oim.order_item_id
+         WHERE oim.meta_key = 'ss_event_id' AND oim.meta_value = %s",
+        (string) $event_id
     ) );
 
-    foreach ( $orders as $order ) {
-        $order_event = ss_seats_get_event_id( $order->get_id() );
-        if ( (int) $order_event !== (int) $event_id ) { continue; }
+    $sold = array();
+    foreach ( $order_ids as $order_id ) {
+        $order = wc_get_order( (int) $order_id );
+        if ( ! $order || ! $order->has_status( array( 'processing', 'completed' ) ) ) { continue; }
 
         foreach ( $order->get_items() as $item ) {
             $seats_raw = $item->get_meta( 'ss_seats' );
@@ -5911,6 +5927,19 @@ function ss_seating_mark_sold_seats( array $classes, string $seat_code, int $eve
  *               Array vacío si no hay _ss_layout.
  */
 function ss_get_zone_inventory( int $event_id ): array {
+    // Memoizado por request: esta función corre varias veces en la misma carga
+    // de la página de evento (ssSeatingState del JS, el bloque de zonas del
+    // template, y de nuevo adentro de ss_get_event_availability_summary()) —
+    // cada llamada repetía las mismas queries al seat ledger. Sin invalidar
+    // entre requests (eso lo maneja el ledger/sesión, no esta caché).
+    static $cache = array();
+    if ( array_key_exists( $event_id, $cache ) ) {
+        return $cache[ $event_id ];
+    }
+    return $cache[ $event_id ] = ss_compute_zone_inventory( $event_id );
+}
+
+function ss_compute_zone_inventory( int $event_id ): array {
     if ( ! $event_id ) {
         return array();
     }
@@ -6106,17 +6135,24 @@ function ss_get_zone_sold_ticket_qtys_from_orders( int $event_id ): array {
         return array();
     }
 
-    $zone_sold = array();
-    $order_ids = wc_get_orders( array(
-        'status' => array( 'processing', 'completed' ),
-        'limit'  => -1,
-        'return' => 'ids',
+    // Antes traía TODOS los pedidos processing/completed del sitio entero y
+    // descartaba en PHP los que no eran de este evento (full-scan que crece
+    // con cada pedido nuevo de todo el sitio) — acotar primero por
+    // ss_event_id en order itemmeta, mismo patrón ya usado en Cierre Contable.
+    global $wpdb;
+    $order_ids = $wpdb->get_col( $wpdb->prepare(
+        "SELECT DISTINCT oi.order_id
+         FROM {$wpdb->prefix}woocommerce_order_items AS oi
+         INNER JOIN {$wpdb->prefix}woocommerce_order_itemmeta AS oim
+             ON oi.order_item_id = oim.order_item_id
+         WHERE oim.meta_key = 'ss_event_id' AND oim.meta_value = %s",
+        (string) $event_id
     ) );
 
+    $zone_sold = array();
     foreach ( $order_ids as $oid ) {
-        $order = wc_get_order( $oid );
-        if ( ! $order ) { continue; }
-        if ( ss_get_event_id_from_order( $order ) !== $event_id ) { continue; }
+        $order = wc_get_order( (int) $oid );
+        if ( ! $order || ! $order->has_status( array( 'processing', 'completed' ) ) ) { continue; }
 
         foreach ( $order->get_items() as $item ) {
             // Fuente preferida: detalle por zona (Box Office).
@@ -6646,11 +6682,28 @@ function ss_seating_persist_seats_to_order_item( $item, $cart_item_key, $values,
 
     if ( ! empty( $seats ) ) {
         $item->update_meta_data( 'ss_seats', $seats );
+        $eid = ! empty( $values['ss_event_id'] ) ? (int) $values['ss_event_id'] : 0;
+
         // Enriquecer con seat_data si no viene del cart
-        if ( empty( $values['ss_seat_data'] ) ) {
-            $eid = ! empty( $values['ss_event_id'] ) ? (int) $values['ss_event_id'] : 0;
-            if ( $eid > 0 ) {
-                $item->update_meta_data( 'ss_seat_data', ss_build_seat_data( $seats, $eid ) );
+        if ( empty( $values['ss_seat_data'] ) && $eid > 0 ) {
+            $item->update_meta_data( 'ss_seat_data', ss_build_seat_data( $seats, $eid ) );
+        }
+
+        // Zona: en modo seat puro el carrito nunca manda ss_zone (a diferencia de
+        // modo zone/hybrid) — derivarla de las sillas, igual que ya hace Box Office
+        // en ss_boxoffice_process_sale(), para que reportes/Cierre Contable/check-in
+        // tengan desglose por zona también en ventas web por asiento.
+        if ( empty( $values['ss_zone'] ) && $eid > 0 ) {
+            $zone_map = ss_seats_zone_map( $eid );
+            $zones    = array();
+            foreach ( $seats as $s ) {
+                if ( ! empty( $zone_map[ $s ] ) ) {
+                    $zones[] = $zone_map[ $s ];
+                }
+            }
+            $zones = array_unique( $zones );
+            if ( ! empty( $zones ) ) {
+                $item->update_meta_data( 'ss_zone', implode( ', ', $zones ) );
             }
         }
     }
@@ -7446,10 +7499,11 @@ function ss_checkin_dashboard_enqueue( string $hook ): void {
         return;
     }
 
-    // html5-qrcode desde CDN
+    // html5-qrcode alojado localmente (unpkg.com es poco confiable: 503s intermitentes
+    // dejaban la librería sin cargar y el escáner se quedaba trabado sin pedir permisos de cámara)
     wp_enqueue_script(
         'html5-qrcode',
-        'https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js',
+        plugin_dir_url( __FILE__ ) . 'lib/html5-qrcode/html5-qrcode.min.js',
         array(),
         '2.3.8',
         true

@@ -15,6 +15,12 @@ stage.add(zoneLayer);
 stage.add(seatLayer);
 
 var seatRadius = 15;
+// Mismo rectángulo redondeado que el frontend (ss-konva-renderer.js) — forma
+// sincronizada, el fill sigue siendo por zona acá (ver _redrawSeats). seatRadius
+// no se toca (de ahí sale spacing/bounding-box en varios lados de este archivo).
+var SEAT_W      = seatRadius * 2.13; // 32
+var SEAT_H      = seatRadius * 1.73; // 26
+var SEAT_CORNER = 6;
 
 // ═══════════════════════════════════════════════════════════════════
 //  BUILDER STATE (runtime only — never serialized)
@@ -304,7 +310,7 @@ function initZoneSystem() {
     if (!_builderMode) return;
     if (_panMoved) return;
     var target = e.target;
-    if (!(target instanceof Konva.Circle)) return;
+    if (!target.getAttr('isSeat')) return;
     var rowIdx = target.getAttr('rowIndex');
     var slot   = target.getAttr('physicalSlot');
     if (rowIdx === undefined || rowIdx === null || slot === undefined || slot === null) return;
@@ -488,12 +494,13 @@ function fitStageToContent() {
   // Bounding box of all seats
   var minX = Infinity, maxX = -Infinity;
   var minY = Infinity, maxY = -Infinity;
+  var halfW = SEAT_W / 2, halfH = SEAT_H / 2;
   for (var i = 0; i < seats.length; i++) {
     var s = seats[i];
-    if (s.x - seatRadius < minX) minX = s.x - seatRadius;
-    if (s.x + seatRadius > maxX) maxX = s.x + seatRadius;
-    if (s.y - seatRadius < minY) minY = s.y - seatRadius;
-    if (s.y + seatRadius > maxY) maxY = s.y + seatRadius;
+    if (s.x - halfW < minX) minX = s.x - halfW;
+    if (s.x + halfW > maxX) maxX = s.x + halfW;
+    if (s.y - halfH < minY) minY = s.y - halfH;
+    if (s.y + halfH > maxY) maxY = s.y + halfH;
   }
 
   // Include escenario
@@ -532,6 +539,58 @@ function fitStageToContent() {
 //  RENDER PIPELINE
 // ═══════════════════════════════════════════════════════════════════
 
+/**
+ * Cartel de piso/balcón dentro del mismo mapa continuo — mismo diseño que
+ * ss-konva-renderer.js: recuadro punteado alrededor de las sillas reales de
+ * esa sección (entre este marcador y el siguiente, o el final del mapa) +
+ * texto en itálica centrado arriba. No un banner relleno de tamaño fijo.
+ */
+function drawFloorLabelBoxes(layer, rows, seats) {
+  var markers = [];
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i].type === 'floor-label') {
+      markers.push({ y: rows[i].y, text: rows[i].text || 'PISO' });
+    }
+  }
+  if (!markers.length) return;
+  markers.sort(function (a, b) { return a.y - b.y; });
+
+  var accent = '#8B5CF6'; // mismo violeta de "seleccionada" en el frontend
+  var pad = 16;
+
+  for (var m = 0; m < markers.length; m++) {
+    var top    = markers[m].y;
+    var bottom = (m + 1 < markers.length) ? markers[m + 1].y : Infinity;
+    var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+
+    for (var s = 0; s < seats.length; s++) {
+      var seat = seats[s];
+      if (seat.y < top || seat.y >= bottom) continue;
+      if (seat.x - SEAT_W / 2 < minX) minX = seat.x - SEAT_W / 2;
+      if (seat.x + SEAT_W / 2 > maxX) maxX = seat.x + SEAT_W / 2;
+      if (seat.y - SEAT_H / 2 < minY) minY = seat.y - SEAT_H / 2;
+      if (seat.y + SEAT_H / 2 > maxY) maxY = seat.y + SEAT_H / 2;
+    }
+    if (minX === Infinity) continue;
+
+    var boxX = minX - pad, boxY = minY - pad;
+    var boxW = (maxX - minX) + pad * 2;
+    var boxH = (maxY - minY) + pad * 2;
+
+    var group = new Konva.Group({ x: boxX, y: boxY, listening: false });
+    group.add(new Konva.Rect({
+      width: boxW, height: boxH,
+      stroke: accent, strokeWidth: 1.5, dash: [5, 4], cornerRadius: 6,
+    }));
+    group.add(new Konva.Text({
+      x: 0, y: -27, width: boxW,
+      text: markers[m].text, align: 'center',
+      fontSize: 17, fontStyle: 'bold', fill: accent, fontFamily: 'sans-serif',
+    }));
+    layer.add(group);
+  }
+}
+
 function _redrawZoneLayer() {
   zoneLayer.destroyChildren();
   _zoneNodes = [];
@@ -549,23 +608,10 @@ function _redrawZoneLayer() {
     zoneLayer.add(node.group);
   }
 
-  // Floor-label banners
-  for (var fl = 0; fl < venueConfig.rows.length; fl++) {
-    var flRow = venueConfig.rows[fl];
-    if (flRow.type !== 'floor-label') continue;
-    var flGroup = new Konva.Group({ x: venueConfig.startX, y: flRow.y - 14 });
-    flGroup.add(new Konva.Rect({
-      x: 0, y: 0, width: 500, height: 22,
-      fill: '#1e293b', opacity: 0.85, cornerRadius: 4
-    }));
-    flGroup.add(new Konva.Text({
-      x: 8, y: 4,
-      text: flRow.text || 'PISO',
-      fontSize: 13, fontStyle: 'bold',
-      fill: '#fbbf24', fontFamily: 'sans-serif'
-    }));
-    zoneLayer.add(flGroup);
-  }
+  // Cartel de piso/balcón: recuadro punteado alrededor de las sillas de esa
+  // sección + texto en itálica arriba (ver drawFloorLabelBoxes, mismo diseño
+  // que el frontend en ss-konva-renderer.js).
+  drawFloorLabelBoxes(zoneLayer, venueConfig.rows, buildSeatsFromConfig(venueConfig));
 
   // Shared transformer (builder mode only)
   _transformer = new Konva.Transformer({
@@ -619,14 +665,17 @@ function _redrawSeats() {
     var seat = seats[i];
     var fillColor = zoneColorMap[seat.zone] || '#888888';
 
-    var circle = new Konva.Circle({
-      x: seat.x,
-      y: seat.y,
-      radius: seatRadius,
+    var circle = new Konva.Rect({
+      x: seat.x - SEAT_W / 2,
+      y: seat.y - SEAT_H / 2,
+      width: SEAT_W,
+      height: SEAT_H,
+      cornerRadius: SEAT_CORNER,
       fill: fillColor,
       stroke: '#00000033',
       strokeWidth: 1,
     });
+    circle.setAttr('isSeat', true);
     circle.setAttr('origFill', fillColor);
     circle.setAttr('rowIndex', seat.rowIndex);
     circle.setAttr('physicalSlot', seat.physicalSlot);
@@ -637,9 +686,9 @@ function _redrawSeats() {
     }
 
     var textLabel = new Konva.Text({
-      x: seat.x - seatRadius,
+      x: seat.x - SEAT_W / 2,
       y: seat.y - 5,
-      width: seatRadius * 2,
+      width: SEAT_W,
       text: seat.id,
       fontSize: 8,
       fontStyle: 'bold',
@@ -649,6 +698,13 @@ function _redrawSeats() {
     });
 
     seatsGroup.add(circle);
+
+    // Nota: acá NO se dibuja la rayita de categoría — el fill del builder ya
+    // ES el color de zona (ver arriba), así que la línea sería del mismo
+    // color que el fondo (invisible/redundante). La rayita solo tiene sentido
+    // en el frontend (ss-konva-renderer.js), donde el fill pasó a representar
+    // el estado de la silla, no la zona.
+
     seatsGroup.add(textLabel);
   }
 
@@ -675,22 +731,24 @@ function _redrawSeats() {
         if (removedSet[slot]) {
           cursorX += venueConfig.spacing;
 
-          var ghost = new Konva.Circle({
-            x: slotX, y: row.y,
-            radius: seatRadius,
+          var ghost = new Konva.Rect({
+            x: slotX - SEAT_W / 2, y: row.y - SEAT_H / 2,
+            width: SEAT_W, height: SEAT_H,
+            cornerRadius: SEAT_CORNER,
             fill: '#e5e7eb',
             stroke: '#9ca3af',
             strokeWidth: 1.5,
             dash: [3, 3],
             opacity: 0.75,
           });
+          ghost.setAttr('isSeat', true);
           ghost.setAttr('rowIndex', ri);
           ghost.setAttr('physicalSlot', slot);
           ghost.setAttr('isRemoved', true);
 
           var ghostText = new Konva.Text({
-            x: slotX - seatRadius, y: row.y - 5,
-            width: seatRadius * 2,
+            x: slotX - SEAT_W / 2, y: row.y - 5,
+            width: SEAT_W,
             text: '✕', fontSize: 9, fontStyle: 'bold',
             fill: '#6b7280', align: 'center',
             listening: false,

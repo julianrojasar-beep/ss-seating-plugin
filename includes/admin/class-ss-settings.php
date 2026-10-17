@@ -34,8 +34,10 @@ class SS_Settings {
         return array(
             'color_primary'           => '#6d28d9',
             'text_color'              => '#f0ede8',
-            'seat_reserved_color'     => '#FF9800',
-            'seat_sold_color'         => '#9e9e9e',
+            'seat_available_color'    => '#64748B',
+            'seat_reserved_color'     => '#F59E0B',
+            'seat_sold_color'         => '#F1F5F9',
+            'seat_selected_color'     => '#8B5CF6',
             'show_legend'             => '1',
             'show_inventory'          => '1',
             'show_selection_summary'  => '1',
@@ -193,7 +195,7 @@ class SS_Settings {
         $defaults  = self::defaults();
         $sanitized = array();
 
-        $estilo_keys  = array( 'color_primary', 'text_color', 'seat_reserved_color', 'seat_sold_color' );
+        $estilo_keys  = array( 'color_primary', 'text_color', 'seat_available_color', 'seat_reserved_color', 'seat_sold_color', 'seat_selected_color' );
         $general_keys = array_keys( array_diff_key( $defaults, array_flip( $estilo_keys ) ) );
         $keys = ( $action === 'save_estilo' ) ? $estilo_keys : $general_keys;
 
@@ -363,21 +365,24 @@ class SS_Settings {
                 <h3 id="ss-preview-title" style="margin:0 0 6px;font-size:16px;">Jueves de Magia</h3>
                 <p id="ss-preview-body" style="margin:0 0 16px;font-size:13px;line-height:1.6;">Un plan diferente para romper la rutina y dejarte sorprender. Teatro Esquina Latina · 7:30 PM.</p>
                 <button type="button" id="ss-preview-btn" style="width:100%;padding:11px 16px;border-radius:10px;border:none;font-size:13px;font-weight:600;letter-spacing:.03em;cursor:default;margin-bottom:20px;">Ver evento</button>
-                <div style="display:flex;gap:24px;">
+                <div style="display:flex;gap:24px;flex-wrap:wrap;">
                     <div style="text-align:center;">
-                        <div id="ss-preview-seat-avail" style="width:30px;height:30px;border-radius:50%;background:#4a90d9;margin:0 auto 6px;"></div>
-                        <span style="color:rgba(255,255,255,.55);font-size:11px;">Disponible*</span>
+                        <div id="ss-preview-seat-avail" style="width:34px;height:28px;border-radius:6px;margin:0 auto 6px;"></div>
+                        <span style="color:rgba(255,255,255,.55);font-size:11px;">Disponible</span>
                     </div>
                     <div style="text-align:center;">
-                        <div id="ss-preview-seat-reserved" style="width:30px;height:30px;border-radius:50%;margin:0 auto 6px;"></div>
+                        <div id="ss-preview-seat-reserved" style="width:34px;height:28px;border-radius:6px;margin:0 auto 6px;"></div>
                         <span style="color:rgba(255,255,255,.55);font-size:11px;">Reservada</span>
                     </div>
                     <div style="text-align:center;">
-                        <div id="ss-preview-seat-sold" style="width:30px;height:30px;border-radius:50%;margin:0 auto 6px;"></div>
+                        <div id="ss-preview-seat-sold" style="width:34px;height:28px;border-radius:6px;margin:0 auto 6px;"></div>
                         <span style="color:rgba(255,255,255,.55);font-size:11px;">Vendida</span>
                     </div>
+                    <div style="text-align:center;">
+                        <div id="ss-preview-seat-selected" style="width:34px;height:28px;border-radius:6px;margin:0 auto 6px;"></div>
+                        <span style="color:rgba(255,255,255,.55);font-size:11px;">Seleccionada</span>
+                    </div>
                 </div>
-                <p style="color:rgba(255,255,255,.3);font-size:10px;margin:14px 0 0;">*Ilustrativo — el color real de "Disponible" lo define cada evento por zona.</p>
             </div>
 
             <h2 style="margin-top:0">Colores de la interfaz</h2>
@@ -389,10 +394,12 @@ class SS_Settings {
 
             <h2>Colores de sillas (frontend)</h2>
             <table class="form-table">
+                <?php $this->row_color( $on, 'seat_available_color', 'Disponible', $s ); ?>
                 <?php $this->row_color( $on, 'seat_reserved_color',  'Reservada',  $s ); ?>
                 <?php $this->row_color( $on, 'seat_sold_color',      'Vendida',    $s ); ?>
+                <?php $this->row_color( $on, 'seat_selected_color',  'Seleccionada', $s ); ?>
             </table>
-            <p class="description" style="margin-top:-8px">El color de las sillas "Disponible" lo define cada evento por zona (pestaña "Mapa" o "Tickets" del evento), no aquí.</p>
+            <p class="description" style="margin-top:-8px">Estos 4 colores representan el <strong>estado</strong> de la silla (son los mismos para todas las zonas). La categoría comercial (ej. Preferencial) se distingue con la rayita de color en la base de cada silla, no con el relleno.</p>
 
             <?php submit_button( 'Guardar estilo' ); ?>
         </form>
@@ -411,13 +418,17 @@ class SS_Settings {
             }
             var primaryInput  = fieldFor('color_primary');
             var textInput     = fieldFor('text_color');
+            var availInput    = fieldFor('seat_available_color');
             var reservedInput = fieldFor('seat_reserved_color');
             var soldInput     = fieldFor('seat_sold_color');
+            var selectedInput = fieldFor('seat_selected_color');
             var btn      = document.getElementById('ss-preview-btn');
             var title    = document.getElementById('ss-preview-title');
             var body     = document.getElementById('ss-preview-body');
+            var aSwatch  = document.getElementById('ss-preview-seat-avail');
             var rSwatch  = document.getElementById('ss-preview-seat-reserved');
             var sSwatch  = document.getElementById('ss-preview-seat-sold');
+            var selSwatch = document.getElementById('ss-preview-seat-selected');
 
             function update() {
                 if (primaryInput && btn) {
@@ -428,10 +439,24 @@ class SS_Settings {
                     if (title) { title.style.color = textInput.value; }
                     if (body)  { body.style.color = textInput.value; body.style.opacity = '0.75'; }
                 }
-                if (reservedInput && rSwatch) { rSwatch.style.background = reservedInput.value; }
-                if (soldInput && sSwatch)     { sSwatch.style.background = soldInput.value; }
+                if (availInput && aSwatch) {
+                    aSwatch.style.background = availInput.value;
+                    aSwatch.style.color = contrastColor(availInput.value);
+                }
+                if (reservedInput && rSwatch) {
+                    rSwatch.style.background = reservedInput.value;
+                    rSwatch.style.color = contrastColor(reservedInput.value);
+                }
+                if (soldInput && sSwatch) {
+                    sSwatch.style.background = soldInput.value;
+                    sSwatch.style.color = contrastColor(soldInput.value);
+                }
+                if (selectedInput && selSwatch) {
+                    selSwatch.style.background = selectedInput.value;
+                    selSwatch.style.color = contrastColor(selectedInput.value);
+                }
             }
-            [primaryInput, textInput, reservedInput, soldInput].forEach(function (el) {
+            [primaryInput, textInput, availInput, reservedInput, soldInput, selectedInput].forEach(function (el) {
                 if (el) { el.addEventListener('input', update); }
             });
             update();

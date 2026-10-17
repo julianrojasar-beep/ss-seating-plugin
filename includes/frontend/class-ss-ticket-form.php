@@ -50,12 +50,13 @@ class SS_Ticket_Form {
         // Obtener product_id de WC asociado al evento
         $product_id = self::get_product_id( $event_id );
 
-        // Encolar JS del formulario
-        $this->enqueue_assets( $event_id, $sale_mode, $product_id );
-
-        // Determinar si el evento ya pasó
+        // Determinar si el evento ya pasó (antes de encolar JS: el renderer y el
+        // formulario necesitan saberlo para no permitir seleccionar asientos)
         $event_date_raw = get_post_meta( $event_id, '_ss_event_date', true );
         $is_past        = $event_date_raw && $event_date_raw < current_time( 'Y-m-d' );
+
+        // Encolar JS del formulario
+        $this->enqueue_assets( $event_id, $sale_mode, $product_id, $is_past );
 
         // Renderizar template
         ob_start();
@@ -75,9 +76,23 @@ class SS_Ticket_Form {
     /**
      * Encolar Konva renderer + script del formulario y pasar datos al JS.
      */
-    private function enqueue_assets( int $event_id, string $sale_mode, int $product_id ): void {
+    private function enqueue_assets( int $event_id, string $sale_mode, int $product_id, bool $is_past = false ): void {
         $plugin_url  = plugin_dir_url( dirname( __DIR__ ) );
         $plugin_path = plugin_dir_path( dirname( __DIR__ ) );
+
+        // Fuentes de Google: <link> propio (no @import dentro del CSS, que es
+        // secuencial y sin preconnect — bloqueaba la resolución del resto de
+        // la hoja hasta resolver una conexión externa nueva).
+        wp_enqueue_style(
+            'ss-event-page-fonts',
+            'https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=DM+Sans:wght@300;400;500;600;700&display=swap',
+            array(),
+            null
+        );
+        add_action( 'wp_head', function () {
+            echo '<link rel="preconnect" href="https://fonts.googleapis.com">' . "\n";
+            echo '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>' . "\n";
+        }, 1 );
 
         // CSS de la página de evento
         wp_enqueue_style(
@@ -112,7 +127,10 @@ class SS_Ticket_Form {
 
             $renderer_ver = filemtime( $plugin_path . 'assets/js/ss-konva-renderer.js' ) ?: '1.1.0';
 
-            wp_enqueue_script( 'konva', $plugin_url . 'assets/js/konva.min.js', array(), '9.3.6', true );
+            // filemtime(), no un string de versión a mano — el string fijo '9.3.6' había quedado
+            // desactualizado respecto al Konva realmente empaquetado (v9.3.22), lo que además
+            // rompe el cache-busting si el archivo se actualiza sin acordarse de bumpear el string.
+            wp_enqueue_script( 'konva', $plugin_url . 'assets/js/konva.min.js', array(), filemtime( $plugin_path . 'assets/js/konva.min.js' ) ?: '9.3.22', true );
             wp_enqueue_script( 'ss-seat-engine', $plugin_url . 'assets/js/seat-engine.js', array(), $renderer_ver, true );
             wp_enqueue_script( 'ss-konva-renderer', $plugin_url . 'assets/js/ss-konva-renderer.js', array( 'konva', 'ss-seat-engine' ), $renderer_ver, true );
 
@@ -175,9 +193,12 @@ class SS_Ticket_Form {
                 'nonce'    => wp_create_nonce( 'ss_save_seats' ),
                 'eventId'  => $event_id,
                 'saleMode' => $sale_mode,
+                'isPast'   => $is_past,
                 'colors'   => array(
-                    'sold'     => SS_Settings::get( 'seat_sold_color',     '#9e9e9e' ),
-                    'reserved' => SS_Settings::get( 'seat_reserved_color', '#FF9800' ),
+                    'available' => SS_Settings::get( 'seat_available_color', '#64748B' ),
+                    'sold'      => SS_Settings::get( 'seat_sold_color',       '#F1F5F9' ),
+                    'reserved'  => SS_Settings::get( 'seat_reserved_color',   '#F59E0B' ),
+                    'selected'  => SS_Settings::get( 'seat_selected_color',   '#8B5CF6' ),
                 ),
             ) );
 
@@ -202,6 +223,7 @@ class SS_Ticket_Form {
             'eventId'    => $event_id,
             'productId'  => $product_id,
             'saleMode'   => $sale_mode,
+            'isPast'     => $is_past,
         ) );
     }
 }

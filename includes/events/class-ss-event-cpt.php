@@ -34,6 +34,107 @@ class SS_Event_CPT {
 
         // Crear producto WC oculto al publicar/guardar un ss_event
         add_action( 'save_post_ss_event', array( __CLASS__, 'ensure_wc_product' ), 20, 2 );
+
+        // Duplicar evento: mismo mapa/tickets/config, fecha en blanco para forzar elegir la nueva
+        add_filter( 'post_row_actions', array( __CLASS__, 'add_duplicate_row_action' ), 10, 2 );
+        add_action( 'admin_action_ss_duplicate_event', array( __CLASS__, 'handle_duplicate' ) );
+        add_action( 'admin_notices', array( __CLASS__, 'duplicate_admin_notice' ) );
+    }
+
+    /**
+     * Meta que NO se copia al duplicar un evento: son datos de venta/estado
+     * de la instancia original, no de la configuración reutilizable (mapa,
+     * tickets, descuentos, difusión, etc.).
+     */
+    private static function duplicate_skip_meta(): array {
+        return array(
+            '_ss_product_id',          // se regenera solo al publicar el duplicado (ensure_wc_product)
+            '_ss_sold_seats',           // ventas del evento original, no se heredan
+            '_ss_zone_sold_qty',        // ventas por zona del evento original
+            '_ss_event_checkin_token',  // se autogenera la primera vez que se visita /control-ingreso/
+            '_ss_cierre_extras',        // extras de taquilla ya facturados del evento original
+            '_ss_difusion_is_active',   // evitar 2 eventos "activos" a la vez en la misma serie
+            '_edit_lock',
+            '_edit_last',
+        );
+    }
+
+    /**
+     * Agrega el link "Duplicar" a la lista de eventos (SS Seating → Eventos).
+     */
+    public static function add_duplicate_row_action( array $actions, \WP_Post $post ): array {
+        if ( $post->post_type !== 'ss_event' || ! current_user_can( 'edit_post', $post->ID ) ) {
+            return $actions;
+        }
+        $url = wp_nonce_url(
+            add_query_arg( array( 'action' => 'ss_duplicate_event', 'post' => $post->ID ), admin_url( 'admin.php' ) ),
+            'ss_duplicate_event_' . $post->ID
+        );
+        $actions['ss_duplicate'] = '<a href="' . esc_url( $url ) . '">Duplicar</a>';
+        return $actions;
+    }
+
+    /**
+     * Crea una copia del evento como borrador: mismo mapa, tickets, precios,
+     * ubicación, organizador y difusión — fecha/hora y preventa en blanco
+     * a propósito, para obligar a fijar la fecha nueva antes de publicar.
+     */
+    public static function handle_duplicate(): void {
+        $post_id = isset( $_GET['post'] ) ? (int) $_GET['post'] : 0;
+        if ( ! $post_id || ! check_admin_referer( 'ss_duplicate_event_' . $post_id ) ) {
+            wp_die( 'Solicitud inválida.' );
+        }
+        if ( ! current_user_can( 'edit_post', $post_id ) ) {
+            wp_die( 'No tienes permiso para duplicar este evento.' );
+        }
+
+        $original = get_post( $post_id );
+        if ( ! $original || $original->post_type !== 'ss_event' ) {
+            wp_die( 'Evento no encontrado.' );
+        }
+
+        $new_id = wp_insert_post( array(
+            'post_title'   => $original->post_title . ' (copia)',
+            'post_content' => $original->post_content,
+            'post_type'    => 'ss_event',
+            'post_status'  => 'draft',
+            'post_author'  => get_current_user_id(),
+        ), true );
+
+        if ( is_wp_error( $new_id ) || ! $new_id ) {
+            wp_die( 'No se pudo duplicar el evento.' );
+        }
+
+        $skip_meta = self::duplicate_skip_meta();
+        foreach ( get_post_meta( $post_id ) as $meta_key => $values ) {
+            if ( in_array( $meta_key, $skip_meta, true ) ) {
+                continue;
+            }
+            foreach ( $values as $value ) {
+                add_post_meta( $new_id, $meta_key, maybe_unserialize( $value ) );
+            }
+        }
+
+        // Fecha/hora/preventa en blanco: es la razón de ser de "duplicar un evento
+        // recurrente" — forzar a elegir la fecha nueva antes de publicar.
+        delete_post_meta( $new_id, '_ss_event_date' );
+        delete_post_meta( $new_id, '_ss_event_time' );
+        delete_post_meta( $new_id, '_ss_presale_end_date' );
+
+        wp_safe_redirect( admin_url( 'post.php?post=' . $new_id . '&action=edit&ss_duplicated=1' ) );
+        exit;
+    }
+
+    /**
+     * Aviso tras duplicar, en la pantalla de edición del nuevo borrador.
+     */
+    public static function duplicate_admin_notice(): void {
+        if ( empty( $_GET['ss_duplicated'] ) ) {
+            return;
+        }
+        echo '<div class="notice notice-success is-dismissible"><p>'
+            . 'Evento duplicado. Revisa y fija la <strong>fecha/hora</strong> antes de publicarlo — quedó en blanco a propósito.'
+            . '</p></div>';
     }
 
     /**

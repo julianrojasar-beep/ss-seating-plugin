@@ -4,15 +4,12 @@
  * Layout: Hero → Thumbnails → CSS Grid (seat-map-wrapper | sidebar)
  * ═══════════════════════════════════════════════════════════════════════════════ */
 
-@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=DM+Sans:wght@300;400;500;600;700&display=swap');
+/* Fuentes: NO @import acá — @import dentro de un CSS es secuencial (bloquea
+   la resolución del resto de la hoja hasta resolver la conexión externa) y
+   sin preconnect. Se cargan aparte como <link> propio con preconnect — ver
+   enqueue_assets() en class-ss-ticket-form.php. */
 
-/* ── Loader ─────────────────────────────────────────────────────────────── */
-.tk-loader {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 60vh;
-}
+/* ── Loader (del mapa, ver .ss-map-loader en el bloque del mapa) ──────────── */
 .tk-loader__spinner {
     width: 36px;
     height: 36px;
@@ -117,6 +114,7 @@ body.single-ss_event #content [class*="tutor-"] {
 
 .tk-root .hero__image {
     width: 100%;
+    height: auto;
     display: block;
     border-radius: var(--tk-radius-xl);
     transition: opacity 0.4s ease;
@@ -177,7 +175,7 @@ body.single-ss_event #content [class*="tutor-"] {
 .tk-root .hero__content {
     position: relative;
     z-index: 2;
-    padding: 2rem 2.5rem;
+    padding: 2.5rem 3.5rem;
     width: 100%;
     max-width: var(--tk-max-width);
     margin: 0 auto;
@@ -360,6 +358,7 @@ body.single-ss_event #content [class*="tutor-"] {
 }
 
 .tk-root .seat-map-container {
+    position: relative;
     background: var(--tk-bg-card);
     border: 0.5px solid var(--tk-border);
     border-radius: var(--tk-radius-xl);
@@ -367,20 +366,201 @@ body.single-ss_event #content [class*="tutor-"] {
     overflow: hidden;
 }
 
+/* ── Banner "Elige tu silla" (hint inicial, solo modo seat) ─────────────────── */
+.tk-root .ss-seat-hint-banner {
+    position: absolute;
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 5;
+    padding: 12px 24px;
+    border-radius: 999px;
+    background: var(--tk-bg-card);
+    border: 2px solid var(--tk-accent);
+    color: var(--tk-accent);
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.45);
+    opacity: 0;
+    animation: ss-seat-hint-in 0.35s ease forwards, ss-seat-hint-bob 1.6s ease-in-out 0.35s infinite;
+    pointer-events: none;
+}
+
+.tk-root .ss-seat-hint-banner.is-hidden {
+    animation: none;
+    transition: opacity 0.3s ease;
+    opacity: 0;
+}
+
+@keyframes ss-seat-hint-in {
+    from { opacity: 0; transform: translateX(-50%) translateY(-6px); }
+    to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+@keyframes ss-seat-hint-bob {
+    0%, 100% { transform: translateX(-50%) translateY(0); }
+    50%      { transform: translateX(-50%) translateY(-4px); }
+}
+
+/* Wrapper propio del canvas: los controles/hint se posicionan contra ESTE
+   borde, no contra toda la tarjeta (que incluye la leyenda debajo). */
+.tk-root .ss-map-canvas-wrap {
+    position: relative;
+}
+
+/* Loader acotado al mapa (no a toda la página, ver templates/ticket-form.php) —
+   se oculta solo al evento "ss:konva-ready" que ya dispara el renderer. */
+.tk-root .ss-map-loader {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--tk-bg-card);
+    border-radius: var(--tk-radius-xl);
+}
+
 .tk-root .seat-map-container #ss-konva-container {
+    position: relative;
     width: 100%;
     min-height: 600px;
 }
 
-/* ── Legend (inside map container) ───────────────────────────────────────── */
+/* Tooltip de zona al pasar/tocar una silla (ss-konva-renderer.js) — vive en
+   document.body con position:fixed (no dentro de #ss-konva-container, que
+   tiene overflow:hidden en el padre y lo recortaba cerca de los bordes). */
+.tk-root .ss-seat-tooltip,
+.ss-seat-tooltip {
+    position: fixed;
+    transform: translate(-50%, 10px);
+    background: var(--tk-bg-card, #16213e);
+    border: 1px solid var(--tk-border, #333);
+    color: var(--tk-text, #fff);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 6px;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+    z-index: 1000;
+}
+
+.tk-root .ss-seat-tooltip.is-visible,
+.ss-seat-tooltip.is-visible {
+    opacity: 1;
+}
+
+/* ── Controles de zoom/centrar — visibles sobre el mapa, esquina inferior
+   derecha, para que zoom/pan (ya existían vía rueda/pellizco) sean
+   descubribles tanto en PC como en mobile ────────────────────────────────── */
+.tk-root .ss-map-controls {
+    position: absolute;
+    right: 24px;
+    bottom: 24px;
+    z-index: 6;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.tk-root .ss-map-controls__btn {
+    box-sizing: border-box;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    margin: 0;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    border: 0.5px solid var(--tk-border);
+    background: var(--tk-bg-card);
+    color: var(--tk-text);
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 1;
+    cursor: pointer;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+
+.tk-root .ss-map-controls__btn svg {
+    display: block;
+    width: 14px;
+    height: 14px;
+    pointer-events: none;
+}
+
+.tk-root .ss-map-controls__btn:hover {
+    border-color: var(--tk-accent);
+}
+
+.tk-root .ss-map-controls__btn--fit {
+    margin-top: 4px;
+}
+
+/* Hint de navegación — mismo patrón que .ss-seat-hint-banner: se apaga sola
+   al primer clic en un botón o interacción real con el mapa. */
+.tk-root .ss-map-nav-hint {
+    position: absolute;
+    left: 50%;
+    bottom: 14px;
+    transform: translateX(-50%);
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    max-width: calc(100% - 90px);
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.55);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: none;
+    opacity: 1;
+    transition: opacity 0.3s ease;
+}
+
+.tk-root .ss-map-nav-hint svg {
+    flex-shrink: 0;
+}
+
+.tk-root .ss-map-nav-hint.is-hidden {
+    opacity: 0;
+}
+
+/* ── Legend (inside map container): Estado + Categoría comercial, dos grupos
+   separados — mismos tokens visuales que las sillas reales del mapa ────────── */
 .tk-root .legend {
     display: flex;
-    gap: 16px;
-    justify-content: center;
+    gap: 28px;
     flex-wrap: wrap;
     margin-top: 1.25rem;
     padding-top: 1rem;
     border-top: 0.5px solid var(--tk-border);
+}
+
+.tk-root .legend-group__title {
+    margin: 0 0 8px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--tk-text-dim);
+}
+
+.tk-root .legend-group__items {
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
 }
 
 .tk-root .legend-item {
@@ -391,12 +571,26 @@ body.single-ss_event #content [class*="tutor-"] {
     color: var(--tk-text-muted);
 }
 
-.tk-root .legend-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 3px;
+/* Imita el rectángulo real de la silla (ss-konva-renderer.js SEAT_W/SEAT_H/SEAT_CORNER) */
+.tk-root .legend-seat {
+    position: relative;
+    width: 20px;
+    height: 16px;
+    border-radius: 4px;
     flex-shrink: 0;
-    border: 0.5px solid rgba(255, 255, 255, 0.15);
+    border: 1px solid rgba(0, 0, 0, 0.25);
+}
+
+.tk-root .legend-seat--accent::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 30%;
+    border-radius: 0 0 4px 4px;
+    background: var(--legend-accent, #22D3EE);
+    box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.35);
 }
 
 /* ── Description ─────────────────────────────────────────────────────────── */
@@ -451,6 +645,210 @@ body.single-ss_event #content [class*="tutor-"] {
     color: var(--tk-text);
     margin: 0;
     line-height: 1.2;
+}
+
+/* ── Compra flotante (shortcut a la tarjeta real, ver ss-ticket-form.js) ────── */
+.tk-root .ss-float-buy {
+    position: fixed;
+    right: 24px;
+    bottom: 24px;
+    z-index: 200;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 16px;
+    background: var(--tk-bg-card);
+    border: 0.5px solid var(--tk-border);
+    border-radius: 999px;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+    opacity: 0;
+    transform: translateY(12px);
+    pointer-events: none;
+    transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.tk-root .ss-float-buy.is-visible {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+}
+
+.tk-root .ss-float-buy__steps {
+    display: flex;
+    gap: 5px;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.tk-root .ss-float-buy__dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--tk-border);
+    transition: background 0.25s ease;
+}
+
+.tk-root .ss-float-buy__dot.is-complete,
+.tk-root .ss-float-buy__dot[aria-current="step"] {
+    background: var(--tk-accent);
+}
+
+.tk-root .ss-float-buy__info {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.25;
+    white-space: nowrap;
+}
+
+.tk-root .ss-float-buy__count {
+    font-size: 11px;
+    color: var(--tk-text-dim);
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tk-root .ss-float-buy__total {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--tk-text);
+}
+
+.tk-root .ss-float-buy__btn {
+    flex-shrink: 0;
+    padding: 10px 18px;
+    border: none;
+    border-radius: 999px;
+    background: linear-gradient(135deg, var(--ss-primary, #6d28d9), var(--ss-primary-light, #7c3aed));
+    color: var(--ss-primary-contrast, #fff);
+    font-size: 13px;
+    font-weight: 700;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.tk-root .ss-float-buy__btn:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+/* Mobile: barra fija abajo de ancho completo en vez de pill flotante —
+   "alineado a la derecha" no tiene suficiente espacio en una pantalla angosta. */
+@media (max-width: 700px) {
+    .tk-root .ss-float-buy {
+        left: 0;
+        right: 0;
+        bottom: 0;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        padding: 10px 16px 12px;
+        border-radius: 16px 16px 0 0;
+        transform: translateY(100%);
+    }
+
+    .tk-root .ss-float-buy.is-visible {
+        transform: translateY(0);
+    }
+
+    /* Steps chiquitos arriba, ocupando toda la fila, sincronizados con la
+       sección correspondiente del formulario (updateSteps() en ss-ticket-form.js) */
+    .tk-root .ss-float-buy__steps {
+        order: -1;
+        width: 100%;
+        justify-content: center;
+        margin-bottom: 8px;
+    }
+
+    .tk-root .ss-float-buy__info {
+        flex: 1;
+    }
+}
+
+/* ── Pasos de compra (Selecciona → Resumen → Pago) ──────────────────────────── */
+.tk-root .ss-steps {
+    display: flex;
+    list-style: none;
+    margin: 0;
+    padding: 1rem 1.25rem 0.75rem;
+}
+
+.tk-root .ss-steps__item {
+    position: relative;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+}
+
+.tk-root .ss-steps__item:not(:last-child)::after {
+    content: '';
+    position: absolute;
+    top: 13px;
+    left: 50%;
+    width: 100%;
+    height: 2px;
+    background: var(--tk-border);
+    z-index: 0;
+    transition: background 0.25s ease;
+}
+
+.tk-root .ss-steps__item.is-complete:not(:last-child)::after {
+    background: var(--tk-accent);
+}
+
+.tk-root .ss-steps__indicator {
+    position: relative;
+    z-index: 1;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    background: var(--tk-bg-card);
+    border: 2px solid var(--tk-border);
+    color: var(--tk-text-dim);
+    transition: background 0.25s ease, border-color 0.25s ease, color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.tk-root .ss-steps__check { display: none; }
+
+.tk-root .ss-steps__item.is-complete .ss-steps__num  { display: none; }
+.tk-root .ss-steps__item.is-complete .ss-steps__check { display: block; }
+
+/* Fondo oscuro (igual que la tarjeta) + borde/ícono en el color de acento del
+   sitio — evita el problema de contraste de un ícono blanco fijo sobre un
+   acento claro (ej. amarillo). */
+.tk-root .ss-steps__item.is-complete .ss-steps__indicator {
+    background: var(--tk-bg-card);
+    border-color: var(--tk-accent);
+    color: var(--tk-accent);
+}
+
+.tk-root .ss-steps__item[aria-current="step"] .ss-steps__indicator {
+    border-color: var(--tk-accent);
+    color: var(--tk-accent-text);
+    box-shadow: 0 0 0 4px var(--tk-accent-dim);
+}
+
+.tk-root .ss-steps__label {
+    margin-top: 6px;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--tk-text-dim);
+    transition: color 0.25s ease;
+}
+
+.tk-root .ss-steps__item[aria-current="step"] .ss-steps__label,
+.tk-root .ss-steps__item.is-complete .ss-steps__label {
+    color: var(--tk-text);
 }
 
 /* Card details */
@@ -654,6 +1052,7 @@ body.single-ss_event #content [class*="tutor-"] {
 }
 
 .tk-root .ticket-type {
+    position: relative;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -664,6 +1063,13 @@ body.single-ss_event #content [class*="tutor-"] {
     background: var(--tk-bg-hover);
     transition: border-color 0.2s var(--tk-ease), background 0.2s var(--tk-ease);
     gap: 8px;
+}
+
+/* Barrita de color de zona — mismo color que la rayita de las sillas en el
+   mapa (--zone-accent inyectado inline desde $zone_colors_map), para no
+   confundir zonas cuando hay varias con precios distintos. */
+.tk-root .ticket-type--accent {
+    border-bottom: 3px solid var(--zone-accent);
 }
 
 .tk-root .ticket-type:last-child {
@@ -970,7 +1376,8 @@ body.single-ss_event #content [class*="tutor-"] {
         padding: 1.5rem;
     }
 
-    /* Mobile order: map → purchase → description */
+    /* Orden: mapa → compra → descripción (la descripción va al final del propio
+       seat-map-wrapper en el HTML — ver templates/ticket-form.php) */
     .tk-root .seat-map-wrapper {
         order: 1;
     }
@@ -978,10 +1385,6 @@ body.single-ss_event #content [class*="tutor-"] {
     .tk-root .sidebar {
         position: static;
         order: 2;
-    }
-
-    .tk-root .description-block {
-        order: 3;
     }
 
     .tk-root .hero {
@@ -994,7 +1397,7 @@ body.single-ss_event #content [class*="tutor-"] {
     }
 
     .tk-root .hero__content {
-        padding: 1.5rem;
+        padding: 1.75rem 2rem;
     }
 
     .tk-root .thumb-row {
@@ -1017,7 +1420,15 @@ body.single-ss_event #content [class*="tutor-"] {
     }
 
     .tk-root .hero__content {
-        padding: 1rem 1.25rem;
+        padding: 1.25rem 1.5rem;
+    }
+
+    .tk-root .seat-map-container {
+        padding: 0.75rem;
+    }
+
+    .tk-root .seat-map-container #ss-konva-container {
+        min-height: 240px;
     }
 
     .tk-root .hero__badge {
@@ -1048,7 +1459,10 @@ body.single-ss_event #content [class*="tutor-"] {
     }
 
     .tk-root .seat-map-container #ss-konva-container {
-        min-height: 400px;
+        /* Más bajo a propósito: que en el primer pantallazo del celular entren
+           el header, el mapa y el aviso de "descripción más abajo" sin scroll.
+           El mapa se autoescala a este alto (fitStageToContent), no se corta nada. */
+        min-height: 280px;
     }
 
     .tk-root .legend {

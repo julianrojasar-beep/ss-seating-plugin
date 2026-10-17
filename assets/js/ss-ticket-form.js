@@ -20,6 +20,13 @@
     $(function () {
 
         var config      = ssTicketForm;
+
+        // Evento ya finalizado: el botón ya quedó deshabilitado por PHP con el
+        // mensaje "Este evento ya finalizó" — no inicializar nada de lo de abajo,
+        // que de lo contrario lo reactiva en cuanto detecta una silla seleccionada
+        // (el mapa no debería dejar seleccionar nada, pero esto es la segunda barrera).
+        if (config.isPast) { return; }
+
         var saleMode    = config.saleMode || 'seat';
         var $form       = $('.ss-ticket-form');
         var $summary    = $form.find('.ss-ticket-form__summary');
@@ -31,6 +38,45 @@
         var $seatsSelected = $('#ss-selected-seats');
         var $zoneInput     = $('#ss-ticket-form-zone');
         var buyText        = $buyBtn.text();
+        var $steps         = $form.find('.ss-steps__item');
+
+        // ── Compra flotante: shortcut visible solo mientras la tarjeta real
+        //    (.cta-section, con el botón de compra) no está en pantalla ──
+        var $floatBar   = $('#ss-float-buy');
+        var $floatDots  = $floatBar.find('.ss-float-buy__dot');
+        var $floatCount = $('#ss-float-buy-count');
+        var $floatTotal = $('#ss-float-buy-total');
+        var $floatBtn   = $('#ss-float-buy-btn');
+
+        if ($floatBar.length && window.IntersectionObserver) {
+            var ctaEl = $form.find('.cta-section')[0];
+            if (ctaEl) {
+                new IntersectionObserver(function (entries) {
+                    $floatBar.toggleClass('is-visible', !entries[0].isIntersecting);
+                    $floatBar.attr('aria-hidden', entries[0].isIntersecting ? 'true' : 'false');
+                }, { threshold: 0 }).observe(ctaEl);
+            }
+        }
+
+        $floatBtn.on('click', function () {
+            $buyBtn.trigger('click');
+        });
+
+        // ── Pasos de compra: 0 Selecciona, 1 Resumen, 2 Pago ──
+        function updateSteps(currentIndex) {
+            $steps.each(function () {
+                var idx = parseInt($(this).data('step'), 10);
+                $(this)
+                    .toggleClass('is-complete', idx < currentIndex)
+                    .attr('aria-current', idx === currentIndex ? 'step' : null);
+            });
+            $floatDots.each(function () {
+                var idx = parseInt($(this).data('step'), 10);
+                $(this)
+                    .toggleClass('is-complete', idx < currentIndex)
+                    .attr('aria-current', idx === currentIndex ? 'step' : null);
+            });
+        }
 
         // URL de add-to-cart (inyectada por PHP en el template)
         var addToCartUrl = (typeof ssTicketFormExtra !== 'undefined' && ssTicketFormExtra.addToCartUrl)
@@ -46,8 +92,22 @@
         // ── Mapa seatId → zona (construido desde ssLayoutData) ──
         var seatZoneMap = {};
         (function buildSeatZoneMap() {
-            if (typeof ssLayoutData === 'undefined' || !ssLayoutData || !ssLayoutData.rows) { return; }
-            ssLayoutData.rows.forEach(function (row) {
+            if (typeof ssLayoutData === 'undefined' || !ssLayoutData) { return; }
+
+            // El layout puede venir en formato legacy ({rows:[...]}) o multi-piso
+            // ({floors:[{rows:[...]}, ...]}) — mismo criterio que ss_layout_get_rows()
+            // en PHP. Antes este mapa solo leía `.rows`, así que en cualquier evento
+            // con layout multi-piso quedaba vacío y el precio de toda silla caía a $0.
+            var rows = ssLayoutData.rows;
+            if (!rows && Array.isArray(ssLayoutData.floors)) {
+                rows = [];
+                ssLayoutData.floors.forEach(function (floor) {
+                    if (Array.isArray(floor.rows)) { rows = rows.concat(floor.rows); }
+                });
+            }
+            if (!rows || !rows.length) { return; }
+
+            rows.forEach(function (row) {
                 if (!row.label || !row.zone) { return; }
                 var zone  = String(row.zone).toUpperCase();
                 var count = parseInt(row.count, 10) || 0;
@@ -163,6 +223,26 @@
             var hasSelection = count > 0;
             $summary.toggle(hasSelection);
             $buyBtn.prop('disabled', !hasSelection);
+            updateSteps(hasSelection ? 1 : 0);
+
+            // Compra flotante: desglose por zona (ej. "General x1 · ZONA_2 x2"),
+            // para que no se confunda con cuántas entradas son de cada zona.
+            var zoneBreakdown = {};
+            if (saleMode === 'seat') {
+                selectedSeats.forEach(function (seat) {
+                    var zone = getSeatZoneName(seat) || '—';
+                    zoneBreakdown[zone] = (zoneBreakdown[zone] || 0) + 1;
+                });
+            } else {
+                for (var zk in zoneQtys) {
+                    if (zoneQtys[zk] > 0) { zoneBreakdown[zk] = zoneQtys[zk]; }
+                }
+            }
+            var breakdownParts = [];
+            for (var zn in zoneBreakdown) { breakdownParts.push(zn + ' x' + zoneBreakdown[zn]); }
+            $floatCount.text(breakdownParts.length ? breakdownParts.join(' · ') : '0 entradas');
+            $floatTotal.text(formatPrice(total));
+            $floatBtn.prop('disabled', !hasSelection);
 
             // Actualizar texto del botón
             if (hasSelection) {
@@ -182,7 +262,7 @@
             // Contar asientos seleccionados por zona
             var zoneCounts = {};
             selectedSeats.forEach(function (seat) {
-                var zone = getZoneForSeat(seat);
+                var zone = getSeatZoneName(seat);
                 if (zone) {
                     zoneCounts[zone] = (zoneCounts[zone] || 0) + 1;
                 }
@@ -206,6 +286,25 @@
         }
 
         // ── Obtener zona de un asiento por su código ──
+
+        // Resolver confiable: usa seatZoneMap (filas reales del layout, soporta
+        // multi-piso) y devuelve el nombre de zona con el casing original del
+        // data-zone del DOM. getZoneForSeat() (abajo) solo queda como último
+        // fallback para layouts legacy sin seatZoneMap.
+        function getSeatZoneName(seatId) {
+            var upperZone = seatZoneMap[String(seatId).toUpperCase()];
+            if (upperZone) {
+                var found = '';
+                $form.find('.ss-ticket-form__zone-item').each(function () {
+                    if (String($(this).data('zone')).toUpperCase() === upperZone) {
+                        found = $(this).data('zone');
+                        return false;
+                    }
+                });
+                if (found) { return found; }
+            }
+            return getZoneForSeat(seatId);
+        }
 
         function getZoneForSeat(seatId) {
             var zone = '';
@@ -300,10 +399,12 @@
             alert(msg);
             isSubmitting = false;
             $buyBtn.prop('disabled', false).text(buyText);
+            updateSteps(1);
         }
 
         $buyBtn.on('click', function () {
             if (isSubmitting) { return; }
+            updateSteps(2);
 
             var productId = (typeof ssTicketFormExtra !== 'undefined' && ssTicketFormExtra.productId)
                           ? ssTicketFormExtra.productId
@@ -382,6 +483,7 @@
                         updateSummary();
                     } else {
                         $buyBtn.text(buyText);
+                        updateSteps(0);
                     }
                     return $.Deferred().reject('rejected_seats');
                 }
