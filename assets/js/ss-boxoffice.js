@@ -8,15 +8,39 @@
   'use strict';
 
   // ─── Constants ─────────────────────────────────────────────────
+  // SEAT_RADIUS sigue siendo la unidad de referencia para spacing/bounding-box
+  // (no se tocan coordenadas guardadas, compartidas con el builder) — SEAT_W/H
+  // son el tamaño real del rectángulo dibujado (mismo criterio que
+  // ss-konva-renderer.js, para que Box Office se vea igual que el mapa público).
   var SEAT_RADIUS = 15;
+  var SEAT_W      = SEAT_RADIUS * 2.13; // 32
+  var SEAT_H      = SEAT_RADIUS * 1.73; // 26
+  var SEAT_CORNER = 6;
   var ZOOM_MIN    = 0.3;
   var ZOOM_MAX    = 3;
   var ZOOM_STEP   = 1.08;
   var POLL_INTERVAL = 30000; // 30 seconds
 
+  // Texto blanco u oscuro según el brillo del fill — mismo criterio que
+  // contrastText() en ss-konva-renderer.js/ss-builder-main.js. Solo se usa
+  // para el estado "disponible" (los demás ya tenían texto fijo ajustado a mano).
+  function contrastText(hex) {
+    hex = String(hex || '').replace('#', '');
+    if (hex.length === 3) { hex = hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2]; }
+    var r = parseInt(hex.substr(0, 2), 16) || 0;
+    var g = parseInt(hex.substr(2, 2), 16) || 0;
+    var b = parseInt(hex.substr(4, 2), 16) || 0;
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.6 ? '#1E293B' : '#FFFFFF';
+  }
+
   // ─── Colors by state ──────────────────────────────────────────
-  // Colores configurables desde WP admin (SS Seating → Colores del mapa)
+  // Colores configurables desde WP admin (SS Seating → Colores del mapa).
+  // "available" no vive en ese tab (siempre fue el color de zona) — se
+  // reusa seat_available_color del tab Estilo para que, con el rediseño,
+  // Box Office quede igual de contraste que el mapa público.
   var _c = (window.ssBoxOffice && window.ssBoxOffice.colors) || {};
+  var COLOR_AVAILABLE_FILL = _c.available || '#64748B';
+  var COLOR_AVAILABLE_TEXT = contrastText(COLOR_AVAILABLE_FILL);
   var COLOR_SOLD_FILL     = _c.sold     || '#ef5350';
   var COLOR_SOLD_STROKE   = _c.sold     ? shadeColor(_c.sold,     -30) : '#c62828';
   var COLOR_SOLD_TEXT     = '#fff';
@@ -486,9 +510,9 @@
       node.circle.stroke(COLOR_MANUAL_STROKE);
       node.label.fill(COLOR_MANUAL_TEXT);
     } else {
-      node.circle.fill(node.baseColor);
-      node.circle.stroke('black');
-      node.label.fill('white');
+      node.circle.fill(COLOR_AVAILABLE_FILL);
+      node.circle.stroke('rgba(0,0,0,.25)');
+      node.label.fill(COLOR_AVAILABLE_TEXT);
     }
   }
 
@@ -830,15 +854,38 @@
         if (ssBoxOffice && ssBoxOffice.ticketTypes) {
           for (var ti = 0; ti < ssBoxOffice.ticketTypes.length; ti++) {
             var tt = ssBoxOffice.ticketTypes[ti];
-            if (tt.zone === zkeys[zi]) { unitPrice = parseFloat(tt.price) || 0; break; }
+            if (tt.name === zkeys[zi]) { unitPrice = parseFloat(tt.price) || 0; break; }
           }
         }
       }
     } else {
+      // Modo seat: cada silla puede ser de una zona distinta (ej. mapa con
+      // General + Preferencial) — nunca asumir que todas valen lo del primer
+      // ticket type del evento (mismo bug que tenía el precio dinámico del
+      // carrito web, ver ss_seating_set_dynamic_price en el PHP principal).
       qty = selectedSeats.length;
-      if (ssBoxOffice && ssBoxOffice.ticketTypes && ssBoxOffice.ticketTypes.length > 0) {
-        unitPrice = parseFloat(ssBoxOffice.ticketTypes[0].price) || 0;
+      var total = 0;
+      var zonesSeen = {};
+      var zoneCount = 0;
+      for (var si = 0; si < selectedSeats.length; si++) {
+        var sZone = ((seatNodes[selectedSeats[si]] && seatNodes[selectedSeats[si]].zone) || '').trim().toUpperCase();
+        var sPrice = 0;
+        if (ssBoxOffice && ssBoxOffice.ticketTypes) {
+          for (var tj = 0; tj < ssBoxOffice.ticketTypes.length; tj++) {
+            if (String(ssBoxOffice.ticketTypes[tj].name || '').trim().toUpperCase() === sZone) {
+              sPrice = parseFloat(ssBoxOffice.ticketTypes[tj].price) || 0;
+              break;
+            }
+          }
+        }
+        total += sPrice;
+        if (!zonesSeen[sZone]) { zonesSeen[sZone] = true; zoneCount++; }
       }
+      // unitPrice solo tiene sentido como "qty × precio" si todas las sillas
+      // son de la misma zona — con zonas mezcladas, el total ya es correcto
+      // pero no hay un único precio unitario que lo explique.
+      unitPrice = (zoneCount === 1 && qty > 0) ? total / qty : 0;
+      return { qty: qty, unitPrice: unitPrice, subtotal: total };
     }
 
     return { qty: qty, unitPrice: unitPrice, subtotal: qty * unitPrice };
@@ -1005,6 +1052,9 @@
     var refEl = document.getElementById('bo-valor-ref');
     if (refEl && ref.unitPrice > 0) {
       refEl.textContent = 'Referencia: $' + Math.round(ref.subtotal).toLocaleString('es-CO') + ' (' + ref.qty + ' × $' + Math.round(ref.unitPrice).toLocaleString('es-CO') + ')';
+    } else if (refEl && ref.subtotal > 0) {
+      // Zonas mezcladas: no hay un único "precio unitario" que explique el total.
+      refEl.textContent = 'Referencia: $' + Math.round(ref.subtotal).toLocaleString('es-CO');
     } else if (refEl) {
       refEl.textContent = '';
     }
@@ -1581,7 +1631,6 @@
   }
 
   function drawSeat(group, seat) {
-    var baseColor = zoneColorMap[seat.zone] || '#4a90d9';
     var isSold     = soldSet[seat.id]     === true;
     var isReserved = reservedSet[seat.id] === true;
     var isManual   = manualSet[seat.id]   === true;
@@ -1595,35 +1644,62 @@
     } else if (isManual) {
       fillColor = COLOR_MANUAL_FILL; strokeColor = COLOR_MANUAL_STROKE; textColor = COLOR_MANUAL_TEXT;
     } else {
-      fillColor = baseColor; strokeColor = 'black'; textColor = 'white';
+      fillColor = COLOR_AVAILABLE_FILL; strokeColor = 'rgba(0,0,0,.25)'; textColor = COLOR_AVAILABLE_TEXT;
     }
 
-    // Hit-area invisible más grande que el círculo visual — el radio visual (15px/30px
-    // diámetro) queda por debajo del mínimo táctil recomendado (~44px) para dedos.
-    var hitCircle = new Konva.Circle({
-      x:         seat.x,
-      y:         seat.y,
-      radius:    SEAT_RADIUS + 7,
+    var rectX = seat.x - SEAT_W / 2;
+    var rectY = seat.y - SEAT_H / 2;
+
+    // Hit-area invisible más grande que el rect visual — el tamaño visual
+    // queda por debajo del mínimo táctil recomendado (~44px) para dedos.
+    var hitRect = new Konva.Rect({
+      x:         rectX - 7,
+      y:         rectY - 7,
+      width:     SEAT_W + 14,
+      height:    SEAT_H + 14,
       opacity:   0,
       listening: true,
       seatId:    seat.id,
     });
 
-    var circle = new Konva.Circle({
-      x:           seat.x,
-      y:           seat.y,
-      radius:      SEAT_RADIUS,
-      fill:        fillColor,
-      stroke:      strokeColor,
-      strokeWidth: 1,
-      listening:   true,
-      seatId:      seat.id,
+    var circle = new Konva.Rect({
+      x:            rectX,
+      y:            rectY,
+      width:        SEAT_W,
+      height:       SEAT_H,
+      cornerRadius: SEAT_CORNER,
+      fill:         fillColor,
+      stroke:       strokeColor,
+      strokeWidth:  1,
+      listening:    true,
+      seatId:       seat.id,
     });
 
+    // Barra de categoría comercial — color real asignado a la zona en el
+    // builder (zoneColorMap), independiente del estado (relleno del rect
+    // de arriba). Mismo criterio que ss-konva-renderer.js: sin zonas
+    // hardcodeadas, si no tiene color asignado no se dibuja nada.
+    var accentColor = zoneColorMap[seat.zone] || null;
+    var accentRect = null;
+    if (accentColor) {
+      var accentH = SEAT_H * 0.3;
+      accentRect = new Konva.Rect({
+        x:            rectX,
+        y:            rectY + SEAT_H - accentH,
+        width:        SEAT_W,
+        height:       accentH,
+        cornerRadius: [0, 0, SEAT_CORNER, SEAT_CORNER],
+        fill:         accentColor,
+        stroke:       'rgba(0,0,0,.35)',
+        strokeWidth:  0.75,
+        listening:    false,
+      });
+    }
+
     var label = new Konva.Text({
-      x:         seat.x - SEAT_RADIUS,
+      x:         rectX,
       y:         seat.y - 6,
-      width:     SEAT_RADIUS * 2,
+      width:     SEAT_W,
       text:      seat.id,
       fontSize:  9,
       fontStyle: 'bold',
@@ -1645,19 +1721,20 @@
         target.getStage().container().style.cursor = '';
         hideSeatTooltip();
       };
-      hitCircle.on('mouseenter', function () { onEnter(hitCircle); });
-      hitCircle.on('mouseleave', function () { onLeave(hitCircle); });
+      hitRect.on('mouseenter', function () { onEnter(hitRect); });
+      hitRect.on('mouseleave', function () { onLeave(hitRect); });
       circle.on('mouseenter', function () { onEnter(circle); });
       circle.on('mouseleave', function () { onLeave(circle); });
       label.on('mouseenter', function () { onEnter(label); });
       label.on('mouseleave', function () { onLeave(label); });
     }
 
-    group.add(hitCircle);
+    group.add(hitRect);
     group.add(circle);
+    if (accentRect) { group.add(accentRect); }
     group.add(label);
 
-    return { circle: circle, label: label, zone: seat.zone, baseColor: baseColor };
+    return { circle: circle, label: label, zone: seat.zone, baseColor: COLOR_AVAILABLE_FILL };
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1670,12 +1747,13 @@
     var minX =  Infinity, maxX = -Infinity;
     var minY =  Infinity, maxY = -Infinity;
 
+    var halfW = SEAT_W / 2, halfH = SEAT_H / 2;
     for (var i = 0; i < seatList.length; i++) {
       var s = seatList[i];
-      if (s.x - SEAT_RADIUS < minX) minX = s.x - SEAT_RADIUS;
-      if (s.x + SEAT_RADIUS > maxX) maxX = s.x + SEAT_RADIUS;
-      if (s.y - SEAT_RADIUS < minY) minY = s.y - SEAT_RADIUS;
-      if (s.y + SEAT_RADIUS > maxY) maxY = s.y + SEAT_RADIUS;
+      if (s.x - halfW < minX) minX = s.x - halfW;
+      if (s.x + halfW > maxX) maxX = s.x + halfW;
+      if (s.y - halfH < minY) minY = s.y - halfH;
+      if (s.y + halfH > maxY) maxY = s.y + halfH;
     }
 
     if (config.layout && config.layout.stage) {

@@ -3,7 +3,7 @@
  * Plugin Name: SS Seating
  * Plugin URI: https://tusitio.com
  * Description: Sistema de selección de sillas y venta de boletas con QR para eventos.
- * Version: 1.4.0
+ * Version: 1.4.1
  * Author: Julian Rojas
  * Author URI: https://tusitio.com
  * License: GPL v2 or later
@@ -1598,14 +1598,19 @@ function ss_ajax_save_seats_to_session(): void {
 add_filter( 'woocommerce_payment_complete_order_status', 'ss_event_order_complete_status', 10, 3 );
 
 /**
- * Un pedido de evento en $0 (o negativo) que NO vino de Box Office es
- * sospechoso: ticket type mal guardado, descuento/cupón mal configurado, o
- * un intento de explotar el checkout — sin importar cuál de esos caminos lo
- * llevó a $0. Las cortesías reales se venden por Box Office con el método
- * "cortesia" (`_ss_boxoffice_sale = yes`), nunca por el checkout público.
+ * Un pedido de evento en $0 (o negativo) que NO vino de Box Office y NO tiene
+ * un cupón de WooCommerce aplicado es sospechoso: ticket type mal guardado,
+ * evento vencido comprable a $0, o un intento de explotar el checkout. Un
+ * cupón aplicado (ej. 100% de descuento) es una cortesía intencional del
+ * admin vía WooCommerce — ese caso sí debe autocompletarse, bloquear sillas
+ * y enviar QR con normalidad. Las cortesías sin cupón se venden por Box
+ * Office con el método "cortesia" (`_ss_boxoffice_sale = yes`).
  */
 function ss_event_order_is_unauthorized_zero( \WC_Order $order ): bool {
-    return $order->get_total() <= 0 && $order->get_meta( '_ss_boxoffice_sale' ) !== 'yes';
+    if ( $order->get_total() > 0 || $order->get_meta( '_ss_boxoffice_sale' ) === 'yes' ) {
+        return false;
+    }
+    return empty( $order->get_coupon_codes() );
 }
 
 function ss_event_order_complete_status( string $status, int $order_id, $order = null ): string {
@@ -2176,40 +2181,51 @@ function ss_seating_set_dynamic_price( WC_Cart $cart ): void {
         if ( ! $event_id ) {
             continue;
         }
-        $zone   = strtoupper( trim( (string) ( $item['ss_zone'] ?? '' ) ) );
         $tt_raw = get_post_meta( $event_id, '_ss_ticket_types', true );
-        if ( ! is_array( $tt_raw ) || empty( $tt_raw ) ) {
+        if ( ! is_array( $tt_raw ) || empty( $tt_raw ) || ! isset( $item['data'] ) || ! ( $item['data'] instanceof WC_Product ) ) {
             continue;
         }
         $is_presale = SS_Event_Service::instance()->is_presale_active( $event_id );
-        $price      = null;
+
+        // Precio efectivo (preventa/normal) por zona, indexado por nombre de zona en mayúsculas.
+        $price_by_zone = array();
         foreach ( $tt_raw as $tt ) {
-            $tt_zone = strtoupper( trim( (string) ( $tt['zone'] ?? '' ) ) );
-            if ( $tt_zone === $zone || ( $zone === '' && $price === null ) ) {
-                $normal_price  = (float) ( $tt['price'] ?? 0 );
-                $presale_price = isset( $tt['presale_price'] ) ? (float) $tt['presale_price'] : 0;
-                $price         = ( $is_presale && $presale_price > 0 ) ? $presale_price : $normal_price;
-                if ( $tt_zone === $zone ) {
-                    break;
-                }
-            }
-        }
-        // Nunca aplicar un precio <= 0 (ticket type mal guardado, preventa sin precio, etc.):
-        // mejor dejar el precio placeholder del producto que regalar una entrada por error de datos.
-        if ( $price === null || $price <= 0 || ! isset( $item['data'] ) || ! ( $item['data'] instanceof WC_Product ) ) {
-            continue;
+            $tt_zone       = strtoupper( trim( (string) ( $tt['zone'] ?? '' ) ) );
+            $normal_price  = (float) ( $tt['price'] ?? 0 );
+            $presale_price = isset( $tt['presale_price'] ) ? (float) $tt['presale_price'] : 0;
+            $price_by_zone[ $tt_zone ] = ( $is_presale && $presale_price > 0 ) ? $presale_price : $normal_price;
         }
 
         $sale_mode = get_post_meta( $event_id, '_ss_sale_mode', true ) ?: 'seat';
 
         if ( $sale_mode === 'seat' ) {
-            // Modo seat: qty WC = 1, todas las sillas en ss_seats → precio total = precio × nº sillas
-            $num_seats = ( ! empty( $item['ss_seats'] ) && is_array( $item['ss_seats'] ) )
-                ? count( $item['ss_seats'] )
-                : 1;
-            $item['data']->set_price( $price * $num_seats );
+            // Modo seat: el carrito nunca manda ss_zone (ver ss_seating_persist_seats_to_order_item),
+            // así que el precio de cada silla hay que resolverlo por su zona real en el mapa —
+            // nunca asumir que todo el item es de una sola zona (un mapa puede mezclar General/Preferencial).
+            $seats = ( ! empty( $item['ss_seats'] ) && is_array( $item['ss_seats'] ) ) ? $item['ss_seats'] : array();
+            if ( empty( $seats ) ) {
+                continue;
+            }
+            $zone_map = ss_seats_zone_map( $event_id );
+            $total    = 0.0;
+            foreach ( $seats as $seat ) {
+                $seat_zone = strtoupper( trim( (string) ( $zone_map[ $seat ] ?? '' ) ) );
+                $price     = $price_by_zone[ $seat_zone ] ?? reset( $price_by_zone );
+                $total    += (float) $price;
+            }
+            // Nunca aplicar un precio <= 0 (ticket type mal guardado, preventa sin precio, etc.):
+            // mejor dejar el precio placeholder del producto que regalar una entrada por error de datos.
+            if ( $total <= 0 ) {
+                continue;
+            }
+            $item['data']->set_price( $total );
         } else {
             // Modo zone/general/hybrid: WC qty ya refleja el número de boletas → solo precio unitario
+            $zone  = strtoupper( trim( (string) ( $item['ss_zone'] ?? '' ) ) );
+            $price = $price_by_zone[ $zone ] ?? ( $zone === '' ? reset( $price_by_zone ) : null );
+            if ( $price === null || $price <= 0 ) {
+                continue;
+            }
             $item['data']->set_price( $price );
         }
     }
@@ -11260,10 +11276,14 @@ function ss_boxoffice_render( string $view, int $event_id, string $message = '',
                 ? SS_Couple_Discount::get_for_event( $event_id )
                 : array( 'enabled' => false, 'min_qty' => 2, 'pct' => 0 ),
             'colors'        => array(
-                'sold'     => get_option( 'ss_color_sold',     '#ef5350' ),
-                'reserved' => get_option( 'ss_color_reserved', '#fff3cd' ),
-                'manual'   => get_option( 'ss_color_manual',   '#90caf9' ),
-                'selected' => get_option( 'ss_color_selected', '#e94560' ),
+                // "available" no vive en Colores BO (siempre fue el color de zona) —
+                // se reusa el del tab Estilo para que Box Office combine con el
+                // rediseño del mapa público (v1.4.0).
+                'available' => SS_Settings::get( 'seat_available_color', '#64748B' ),
+                'sold'      => get_option( 'ss_color_sold',     '#ef5350' ),
+                'reserved'  => get_option( 'ss_color_reserved', '#fff3cd' ),
+                'manual'    => get_option( 'ss_color_manual',   '#90caf9' ),
+                'selected'  => get_option( 'ss_color_selected', '#e94560' ),
             ),
         ) );
     }
