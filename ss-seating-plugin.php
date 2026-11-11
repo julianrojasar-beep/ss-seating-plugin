@@ -8089,6 +8089,205 @@ function ss_validate_ticket_ajax(): void {
     ) ) );
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// MODO OFFLINE DEL ESCÁNER — foto de tickets válidos + sincronización de cola
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Construye una foto de todos los tickets válidos de un evento (token → datos)
+ * para que el escáner de /control-ingreso/ la use cuando no hay internet.
+ * Mismo criterio de zona "combinada" que ya usa el ticket/QR normal (no se
+ * resuelve por silla puntual) — ver memoria de sesión sobre zona mixta.
+ */
+function ss_control_ingreso_build_offline_snapshot( int $event_id ): array {
+    global $wpdb;
+    $snapshot = array();
+
+    $order_ids = $wpdb->get_col( $wpdb->prepare(
+        "SELECT DISTINCT oi.order_id
+         FROM {$wpdb->prefix}woocommerce_order_items AS oi
+         INNER JOIN {$wpdb->prefix}woocommerce_order_itemmeta AS oim
+             ON oi.order_item_id = oim.order_item_id
+         WHERE oim.meta_key = 'ss_event_id' AND oim.meta_value = %s",
+        (string) $event_id
+    ) );
+
+    foreach ( $order_ids as $order_id ) {
+        $order_id = (int) $order_id;
+        $order    = wc_get_order( $order_id );
+        if ( ! $order || ! $order->has_status( array( 'processing', 'completed' ) ) ) {
+            continue;
+        }
+
+        $all_seats  = array();
+        $zones_list = array();
+        foreach ( $order->get_items() as $item_id => $item ) {
+            $item_seats = wc_get_order_item_meta( $item_id, 'ss_seats', true );
+            if ( is_array( $item_seats ) ) {
+                $all_seats = array_merge( $all_seats, $item_seats );
+            }
+            $item_zone = wc_get_order_item_meta( $item_id, 'ss_zone', true );
+            if ( $item_zone && is_string( $item_zone ) ) {
+                $zones_list[] = $item_zone;
+            }
+        }
+
+        $base = array(
+            'order_id' => $order_id,
+            'buyer'    => $order->get_formatted_billing_full_name(),
+            'zone'     => implode( ', ', array_unique( $zones_list ) ),
+        );
+
+        $order_token = get_post_meta( $order_id, '_ss_checkin_token', true );
+        if ( $order_token ) {
+            $snapshot[ $order_token ] = $base + array(
+                'type'       => 'order',
+                'id'         => '',
+                'seats'      => $all_seats,
+                'checked_in' => get_post_meta( $order_id, '_ss_checked_in', true ) === 'yes',
+            );
+        }
+
+        $seat_tokens = get_post_meta( $order_id, '_ss_seat_tokens', true );
+        if ( is_array( $seat_tokens ) ) {
+            $seat_checkins = get_post_meta( $order_id, '_ss_seat_checkins', true );
+            if ( ! is_array( $seat_checkins ) ) { $seat_checkins = array(); }
+            foreach ( $seat_tokens as $seat_id => $tok ) {
+                $snapshot[ $tok ] = $base + array(
+                    'type'       => 'seat',
+                    'id'         => $seat_id,
+                    'seats'      => array( $seat_id ),
+                    'checked_in' => ! empty( $seat_checkins[ $seat_id ] ),
+                );
+            }
+        }
+
+        $ticket_tokens = get_post_meta( $order_id, '_ss_ticket_tokens', true );
+        if ( is_array( $ticket_tokens ) ) {
+            $ticket_checkins = get_post_meta( $order_id, '_ss_ticket_checkins', true );
+            if ( ! is_array( $ticket_checkins ) ) { $ticket_checkins = array(); }
+            foreach ( $ticket_tokens as $ticket_id => $tok ) {
+                $snapshot[ $tok ] = $base + array(
+                    'type'       => 'ticket',
+                    'id'         => $ticket_id,
+                    'seats'      => array(),
+                    'checked_in' => ! empty( $ticket_checkins[ $ticket_id ] ),
+                );
+            }
+        }
+    }
+
+    return $snapshot;
+}
+
+function ss_control_ingreso_verify_nonce( int $event_id ): bool {
+    return (bool) wp_verify_nonce(
+        isset( $_POST['nonce'] ) ? sanitize_text_field( wp_unslash( $_POST['nonce'] ) ) : '',
+        'ss_control_ingreso_' . $event_id
+    );
+}
+
+add_action( 'wp_ajax_ss_checkin_offline_snapshot',        'ss_ajax_checkin_offline_snapshot' );
+add_action( 'wp_ajax_nopriv_ss_checkin_offline_snapshot', 'ss_ajax_checkin_offline_snapshot' );
+
+function ss_ajax_checkin_offline_snapshot(): void {
+    $event_id = isset( $_POST['event_id'] ) ? absint( $_POST['event_id'] ) : 0;
+    if ( ! $event_id || ! ss_control_ingreso_verify_nonce( $event_id ) ) {
+        wp_send_json_error( array( 'message' => 'Sesión expirada. Recarga la página.' ), 403 );
+    }
+
+    wp_send_json_success( array(
+        'snapshot'     => ss_control_ingreso_build_offline_snapshot( $event_id ),
+        'generated_at' => current_time( 'mysql' ),
+    ) );
+}
+
+add_action( 'wp_ajax_ss_checkin_offline_sync',        'ss_ajax_checkin_offline_sync' );
+add_action( 'wp_ajax_nopriv_ss_checkin_offline_sync', 'ss_ajax_checkin_offline_sync' );
+
+/**
+ * Recibe la cola de ingresos marcados offline por el escáner y los aplica
+ * contra el pedido real. Revalida cada token contra el cálculo real (no confía
+ * en lo que mandó el cliente) antes de marcar nada.
+ * Si el pedido ya estaba marcado como ingresado (ej. otro dispositivo offline
+ * marcó la misma silla), no lo rechaza — deja una nota en el pedido para
+ * revisión manual, porque el ingreso físico ya ocurrió y no hay forma de
+ * deshacerlo desde el escáner.
+ */
+function ss_ajax_checkin_offline_sync(): void {
+    $event_id = isset( $_POST['event_id'] ) ? absint( $_POST['event_id'] ) : 0;
+    if ( ! $event_id || ! ss_control_ingreso_verify_nonce( $event_id ) ) {
+        wp_send_json_error( array( 'message' => 'Sesión expirada. Recarga la página.' ), 403 );
+    }
+
+    $items = json_decode( isset( $_POST['items'] ) ? wp_unslash( $_POST['items'] ) : '', true );
+    if ( ! is_array( $items ) ) {
+        wp_send_json_error( array( 'message' => 'Datos inválidos.' ), 400 );
+    }
+
+    $results = array();
+
+    foreach ( $items as $item ) {
+        $client_id  = isset( $item['client_id'] ) ? sanitize_text_field( $item['client_id'] ) : '';
+        $type       = isset( $item['type'] ) ? sanitize_text_field( $item['type'] ) : 'order';
+        $order_id   = isset( $item['order_id'] ) ? absint( $item['order_id'] ) : 0;
+        $sub_id     = isset( $item['id'] ) ? sanitize_text_field( $item['id'] ) : '';
+        $token      = isset( $item['token'] ) ? sanitize_text_field( $item['token'] ) : '';
+        $scanned_at = isset( $item['scanned_at'] ) ? sanitize_text_field( $item['scanned_at'] ) : current_time( 'mysql' );
+
+        $order = $order_id ? wc_get_order( $order_id ) : null;
+        if ( ! $order ) {
+            $results[] = array( 'client_id' => $client_id, 'ok' => false, 'message' => 'Pedido no encontrado.' );
+            continue;
+        }
+
+        if ( $type === 'seat' ) {
+            $expected_token = ss_checkin_seat_token( $order_id, $sub_id );
+        } elseif ( $type === 'ticket' ) {
+            $expected_token = ss_checkin_ticket_token( $order_id, $sub_id );
+        } else {
+            $expected_token = ss_checkin_token( $order_id );
+        }
+
+        if ( ! hash_equals( $expected_token, $token ) ) {
+            $results[] = array( 'client_id' => $client_id, 'ok' => false, 'message' => 'Token inválido.' );
+            continue;
+        }
+
+        $label = $type === 'seat' ? ( 'silla ' . $sub_id ) : ( $type === 'ticket' ? ( 'ticket ' . $sub_id ) : 'pedido completo' );
+
+        if ( $type === 'seat' ) {
+            $checkins    = get_post_meta( $order_id, '_ss_seat_checkins', true );
+            $was_already = is_array( $checkins ) && ! empty( $checkins[ $sub_id ] );
+            ss_checkin_mark_seat( $order_id, $sub_id );
+        } elseif ( $type === 'ticket' ) {
+            $checkins    = get_post_meta( $order_id, '_ss_ticket_checkins', true );
+            $was_already = is_array( $checkins ) && ! empty( $checkins[ $sub_id ] );
+            ss_checkin_mark_ticket( $order_id, $sub_id );
+        } else {
+            $was_already = get_post_meta( $order_id, '_ss_checked_in', true ) === 'yes';
+            if ( ! $was_already ) {
+                update_post_meta( $order_id, '_ss_checked_in', 'yes' );
+                update_post_meta( $order_id, '_ss_checked_in_time', current_time( 'mysql' ) );
+            }
+        }
+
+        if ( $was_already ) {
+            $order->add_order_note( sprintf(
+                'Posible doble ingreso: escaneo offline de %s a las %s llegó cuando ya estaba marcado como ingresado. Revisar manualmente.',
+                $label,
+                $scanned_at
+            ) );
+        } else {
+            $order->add_order_note( sprintf( 'Ingreso registrado vía escáner offline (%s), sincronizado luego.', $label ) );
+        }
+
+        $results[] = array( 'client_id' => $client_id, 'ok' => true, 'was_already' => $was_already );
+    }
+
+    wp_send_json_success( array( 'results' => $results ) );
+}
+
 /**
  * Renderiza la página del dashboard de check-in.
  */
@@ -8973,6 +9172,13 @@ function ss_bo_report_csv_export(): void {
         $oid   = (int) $r['order_id'];
         $order = $orders[ $oid ] ?? null;
 
+        // Pedido cancelado/reembolsado/fallido tras la venta BO: no debe seguir
+        // sumando en el cierre aunque el log original diga "vender" (caso real:
+        // reasignación de sillas con pedidos cancelados y reemplazados por otros en $0).
+        if ( $order && ! in_array( $order->get_status(), array( 'processing', 'completed' ), true ) ) {
+            continue;
+        }
+
         $asientos      = array_filter( array_map( 'trim', explode( ',', $r['asientos'] ) ) );
         $ct            = count( $asientos );
         $nombre        = '';
@@ -9083,6 +9289,13 @@ function ss_cierre_contable_page(): void {
     foreach ( $log_rows as $r ) {
         $oid   = (int) $r['order_id'];
         $order = $orders[ $oid ] ?? null;
+
+        // Pedido cancelado/reembolsado/fallido tras la venta BO: no debe seguir
+        // sumando en el cierre aunque el log original diga "vender" (caso real:
+        // reasignación de sillas con pedidos cancelados y reemplazados por otros en $0).
+        if ( $order && ! in_array( $order->get_status(), array( 'processing', 'completed' ), true ) ) {
+            continue;
+        }
 
         $asientos      = array_filter( array_map( 'trim', explode( ',', $r['asientos'] ) ) );
         $ct            = count( $asientos );

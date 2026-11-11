@@ -20,9 +20,15 @@
   var QR_LEGACY     = /\/ss-checkin\/(\d+)\/([a-f0-9]{64})\/?$/i;
 
   // DOM refs
-  var feedbackEl, feedbackWrapEl, feedbackCloseEl, iconEl, msgEl, detailsEl, cameraStatus, historyBody, counterEl;
+  var feedbackEl, feedbackWrapEl, feedbackCloseEl, iconEl, msgEl, detailsEl, cameraStatus, historyBody, counterEl, offlineStatusEl;
   var dismissTimer     = null;
   var AUTO_DISMISS_MS  = 10000;
+
+  // ─── Modo offline: foto de tickets válidos + cola de sincronización ──
+  var offlineSnapshot = {};   // token -> { order_id, buyer, zone, type, id, seats, checked_in }
+  var offlineQueue    = [];   // [{ client_id, token, type, order_id, id, scanned_at }]
+  var SNAPSHOT_REFRESH_MS = 60000;
+  var SYNC_RETRY_MS       = 20000;
 
   document.addEventListener('DOMContentLoaded', init);
 
@@ -45,6 +51,7 @@
       feedbackCloseEl.addEventListener('click', dismissFeedback);
     }
 
+    initOfflineMode();
     startScanner();
     initStatsPolling();
   }
@@ -89,16 +96,19 @@
     var orderId     = '';
     var isSeatQr    = false;
     var isTicketQr  = false;
+    var qrType      = 'order';
 
     var matchSeat = decodedText.match(QR_SEAT);
     if (matchSeat) {
       token    = matchSeat[1];
       isSeatQr = true;
+      qrType   = 'seat';
     } else {
       var matchZoneTicket = decodedText.match(QR_ZONETICKET);
       if (matchZoneTicket) {
         token      = matchZoneTicket[1];
         isTicketQr = true;
+        qrType     = 'ticket';
       } else {
         var matchNew = decodedText.match(QR_NEW);
         if (matchNew) {
@@ -177,10 +187,170 @@
             break;
         }
       })
-      .catch(function (err) {
+      .catch(function () {
         isProcessing = false;
-        showFeedback('invalid', 'Error de red', err.message || 'Sin conexión.');
+        handleOfflineScan(token, qrType);
       });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  MODO OFFLINE
+  // ═══════════════════════════════════════════════════════════════════
+
+  function initOfflineMode() {
+    var cfg = window.ssCheckinFrontend;
+    if (!cfg || !cfg.eventId) return;
+
+    offlineStatusEl = document.createElement('p');
+    offlineStatusEl.id = 'ci-offline-status';
+    offlineStatusEl.style.cssText = 'margin-top:6px;font-size:12px;text-align:center;color:#ffb74d;min-height:16px;';
+    if (cameraStatus && cameraStatus.parentNode) {
+      cameraStatus.parentNode.insertBefore(offlineStatusEl, cameraStatus.nextSibling);
+    }
+
+    offlineSnapshot = loadSnapshotCache();
+    offlineQueue    = loadQueue();
+    updateOfflineBadge();
+
+    fetchSnapshot();
+    setInterval(fetchSnapshot, SNAPSHOT_REFRESH_MS);
+    setInterval(syncQueue, SYNC_RETRY_MS);
+    window.addEventListener('online', function () { syncQueue(); fetchSnapshot(); });
+    window.addEventListener('offline', updateOfflineBadge);
+  }
+
+  function snapshotStorageKey() { return 'ss_ci_snapshot_' + window.ssCheckinFrontend.eventId; }
+  function queueStorageKey()    { return 'ss_ci_queue_'    + window.ssCheckinFrontend.eventId; }
+
+  function loadSnapshotCache() {
+    try {
+      var raw = localStorage.getItem(snapshotStorageKey());
+      var parsed = raw ? JSON.parse(raw) : null;
+      return (parsed && parsed.snapshot) ? parsed.snapshot : {};
+    } catch (e) { return {}; }
+  }
+
+  function saveSnapshotCache() {
+    try {
+      localStorage.setItem(snapshotStorageKey(), JSON.stringify({ snapshot: offlineSnapshot, fetched_at: Date.now() }));
+    } catch (e) { /* localStorage lleno o deshabilitado: seguimos solo en memoria */ }
+  }
+
+  function loadQueue() {
+    try { return JSON.parse(localStorage.getItem(queueStorageKey())) || []; } catch (e) { return []; }
+  }
+
+  function saveQueue() {
+    try { localStorage.setItem(queueStorageKey(), JSON.stringify(offlineQueue)); } catch (e) {}
+  }
+
+  function fetchSnapshot() {
+    var cfg  = window.ssCheckinFrontend;
+    var data = new FormData();
+    data.append('action', 'ss_checkin_offline_snapshot');
+    data.append('nonce', cfg.nonce);
+    data.append('event_id', cfg.eventId);
+
+    fetch(cfg.ajaxUrl, { method: 'POST', body: data, credentials: 'same-origin' })
+      .then(function (res) { return res.json(); })
+      .then(function (response) {
+        if (response.success && response.data && response.data.snapshot) {
+          offlineSnapshot = response.data.snapshot;
+          saveSnapshotCache();
+          updateOfflineBadge();
+        }
+      })
+      .catch(function () { /* seguimos con lo que ya hay en caché local */ });
+  }
+
+  function syncQueue() {
+    if (!offlineQueue.length) { updateOfflineBadge(); return; }
+
+    var cfg  = window.ssCheckinFrontend;
+    var data = new FormData();
+    data.append('action', 'ss_checkin_offline_sync');
+    data.append('nonce', cfg.nonce);
+    data.append('event_id', cfg.eventId);
+    data.append('items', JSON.stringify(offlineQueue));
+
+    fetch(cfg.ajaxUrl, { method: 'POST', body: data, credentials: 'same-origin' })
+      .then(function (res) { return res.json(); })
+      .then(function (response) {
+        if (!response.success || !response.data || !Array.isArray(response.data.results)) return;
+
+        var acked = {};
+        response.data.results.forEach(function (r) { if (r.ok) acked[r.client_id] = true; });
+        offlineQueue = offlineQueue.filter(function (item) { return !acked[item.client_id]; });
+        saveQueue();
+        updateOfflineBadge();
+
+        if (!offlineQueue.length) fetchSnapshot();
+      })
+      .catch(function () { /* reintenta en el próximo ciclo */ });
+  }
+
+  function handleOfflineScan(token, type) {
+    var entry = offlineSnapshot[token];
+
+    if (!entry) {
+      showFeedback('invalid', 'SIN CONEXIÓN', 'No se pudo validar (sin internet) y este ticket no está en los datos descargados — puede ser una venta muy reciente. Reintenta cuando vuelva la señal.');
+      playSound('error');
+      return;
+    }
+
+    var alreadyQueued = offlineQueue.some(function (q) { return q.token === token; });
+
+    if (entry.checked_in || alreadyQueued) {
+      showFeedback('already', 'YA INGRESADO (offline)', buildDetails(offlineEntryToD(entry)));
+      playSound('warn');
+      addHistory(offlineEntryToD(entry), 'already_used');
+      return;
+    }
+
+    entry.checked_in = true;
+    saveSnapshotCache();
+
+    offlineQueue.push({
+      client_id:  token + '-' + Date.now(),
+      token:      token,
+      type:       type,
+      order_id:   entry.order_id,
+      id:         entry.id,
+      scanned_at: new Date().toISOString()
+    });
+    saveQueue();
+    updateOfflineBadge();
+
+    var d = offlineEntryToD(entry);
+    showFeedback('valid', 'INGRESO REGISTRADO (sin conexión)', buildDetails(d) + offlineNoticeRow());
+    playSound('success');
+    addHistory(d, 'valid');
+  }
+
+  function offlineEntryToD(entry) {
+    return {
+      order_id:   entry.order_id,
+      buyer:      entry.buyer,
+      ticket_type: entry.type === 'seat' ? 'seated' : 'general',
+      ticket_qty: (entry.seats && entry.seats.length) ? entry.seats.length : 1,
+      seats:      entry.seats || [],
+      zone:       entry.zone || ''
+    };
+  }
+
+  function offlineNoticeRow() {
+    return '<table><tr><td colspan="2" style="color:#ffb74d;padding-top:6px;">⚠️ Modo offline — se sincronizará cuando vuelva la señal.</td></tr></table>';
+  }
+
+  function updateOfflineBadge() {
+    if (!offlineStatusEl) return;
+    if (!navigator.onLine) {
+      offlineStatusEl.textContent = '📴 Sin conexión — validando contra datos descargados' + (offlineQueue.length ? ' (' + offlineQueue.length + ' pendiente' + (offlineQueue.length === 1 ? '' : 's') + ' de sincronizar)' : '.');
+    } else if (offlineQueue.length) {
+      offlineStatusEl.textContent = '🔄 Sincronizando ' + offlineQueue.length + ' ingreso' + (offlineQueue.length === 1 ? '' : 's') + ' registrado' + (offlineQueue.length === 1 ? '' : 's') + ' sin conexión...';
+    } else {
+      offlineStatusEl.textContent = '';
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════
