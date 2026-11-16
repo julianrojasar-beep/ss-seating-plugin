@@ -10786,19 +10786,26 @@ function ss_boxoffice_ajax_get_orders(): void {
     if ( ! $user ) { wp_send_json_error( 'No autorizado', 401 ); }
     if ( ! $event_id ) { wp_send_json_error( 'Evento no válido' ); }
 
-    $order_ids = wc_get_orders( array(
-        'status'   => array( 'processing', 'completed' ),
-        'limit'    => 50,
-        'orderby'  => 'date',
-        'order'    => 'DESC',
-        'return'   => 'ids',
+    // Antes traía los últimos 50 pedidos processing/completed de TODO el sitio
+    // y descartaba en PHP los que no eran de este evento — con suficiente
+    // volumen de ventas de otros eventos, pedidos viejos de este evento
+    // quedaban fuera del límite de 50 antes de llegar al filtro (ver incidente
+    // pedido #732, 2026-11-15). Mismo patrón ya usado en ss_seats_read_from_orders():
+    // acotar por ss_event_id en order itemmeta ANTES de limitar/cargar pedidos.
+    global $wpdb;
+    $order_ids = $wpdb->get_col( $wpdb->prepare(
+        "SELECT DISTINCT oi.order_id
+         FROM {$wpdb->prefix}woocommerce_order_items AS oi
+         INNER JOIN {$wpdb->prefix}woocommerce_order_itemmeta AS oim
+             ON oi.order_item_id = oim.order_item_id
+         WHERE oim.meta_key = 'ss_event_id' AND oim.meta_value = %s",
+        (string) $event_id
     ) );
 
     $orders = array();
     foreach ( $order_ids as $oid ) {
-        $order = wc_get_order( $oid );
-        if ( ! $order ) { continue; }
-        if ( ss_get_event_id_from_order( $order ) !== $event_id ) { continue; }
+        $order = wc_get_order( (int) $oid );
+        if ( ! $order || ! $order->has_status( array( 'processing', 'completed' ) ) ) { continue; }
 
         $seats = ss_seats_get_from_order( $oid );
         $zones = array();
@@ -10832,8 +10839,14 @@ function ss_boxoffice_ajax_get_orders(): void {
             'checked_in'    => get_post_meta( $oid, '_ss_checked_in', true ) === 'yes',
             'valor_cobrado' => (int) $order->get_meta( '_ss_valor_cobrado' ),
             'nota_bo'       => (string) $order->get_meta( '_ss_nota_bo' ),
+            '_sort_ts'      => $order->get_date_created() ? $order->get_date_created()->getTimestamp() : 0,
         );
     }
+
+    usort( $orders, function( $a, $b ) { return $b['_sort_ts'] <=> $a['_sort_ts']; } );
+    $orders = array_slice( $orders, 0, 50 );
+    foreach ( $orders as &$o ) { unset( $o['_sort_ts'] ); }
+    unset( $o );
 
     wp_send_json_success( array( 'orders' => $orders ) );
 }
@@ -11703,6 +11716,10 @@ a{color:#64b5f6;text-decoration:none}
 .bo-transfer__confirm-btn:hover{background:#6d28d9}
 .bo-transfer__confirm-btn:active,.bo-transfer__search button:active{transform:scale(.96)}
 
+/* ── Buscador de pedidos ────────────────────────── */
+.bo-orders__search{padding:10px 10px 0}
+.bo-orders__search input{width:100%;padding:8px 10px;background:#16213e;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;box-sizing:border-box}
+
 /* ── Seat tooltip ───────────────────────────────── */
 .bo-seat-tooltip{position:fixed;z-index:9999;background:#1a1a2e;color:#90caf9;border:1px solid #1976d2;border-radius:6px;padding:4px 10px;font-size:12px;pointer-events:none;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.5)}
 .bo-seat-tooltip--tap{animation:boSeatInfoIn .15s ease}
@@ -12069,7 +12086,12 @@ a{color:#64b5f6;text-decoration:none}
             <div style="padding:20px;text-align:center;color:#666;font-size:13px">Cargando...</div>
         </div>
         <div class="bo-sidebar__list" id="bo-orders-list" style="display:none">
-            <div style="padding:20px;text-align:center;color:#666;font-size:13px">Cargando pedidos...</div>
+            <div class="bo-orders__search">
+                <input type="text" id="bo-orders-search-input" placeholder="Buscar por nombre o # de pedido">
+            </div>
+            <div id="bo-orders-items">
+                <div style="padding:20px;text-align:center;color:#666;font-size:13px">Cargando pedidos...</div>
+            </div>
         </div>
         <div class="bo-sidebar__list" id="bo-reservations-list" style="display:none">
             <div style="padding:20px;text-align:center;color:#666;font-size:13px">Cargando reservas...</div>

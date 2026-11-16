@@ -142,6 +142,7 @@
     // ── Sidebar tabs ────────────────────────────────────────
     initSidebarTabs();
     initTransferPanel();
+    initOrdersSearch();
 
     // ── Load initial state + start polling ────────────────
     refreshState();
@@ -1076,6 +1077,8 @@
   var lastQrUrl    = '';
   var lastSeatQrs  = {};
   var ordersCache  = {}; // id → order data, para modal de QR desde lista
+  var allOrdersList = []; // lista completa sin filtrar, para el buscador de "Pedidos"
+  var ordersSearchQuery = ''; // query activa, para no perderla en cada poll de refreshOrders
 
   function showSuccessModal(data) {
     var overlay = document.getElementById('bo-success-modal');
@@ -1917,6 +1920,14 @@
   //  ORDERS LIST
   // ═══════════════════════════════════════════════════════════════
 
+  function initOrdersSearch() {
+    var input = document.getElementById('bo-orders-search-input');
+    if (!input) return;
+    input.addEventListener('input', function () {
+      filterOrdersList(input.value);
+    });
+  }
+
   function refreshOrders() {
     var fd = new FormData();
     fd.append('action', 'ss_boxoffice_get_orders');
@@ -1928,97 +1939,116 @@
       .then(function (r) { return r.json(); })
       .then(function (res) {
         if (!res.success) return;
-        var list = document.getElementById('bo-orders-list');
-        if (!list) return;
-
-        var orders = res.data.orders || [];
-        if (!orders.length) {
-          list.innerHTML = '<div style="padding:20px;text-align:center;color:#666;font-size:13px">Sin pedidos activos</div>';
-          return;
-        }
-
-        ordersCache = {};
-        var html = '';
-        for (var i = 0; i < orders.length; i++) {
-          var o = orders[i];
-          ordersCache[o.id] = o;
-          var seatsStr = o.seats && o.seats.length ? o.seats.join(', ') : '';
-          var zonesStr = o.zones && o.zones.length ? o.zones.join(', ') : '';
-
-          html += '<div class="bo-order">';
-          html += '<div class="bo-order__header">';
-          html += '<span class="bo-order__id">#' + o.id + '</span>';
-          html += '<span class="bo-order__status">' + escHtml(o.status) + '</span>';
-          html += '</div>';
-          html += '<div class="bo-order__customer">' + escHtml(o.customer) + '</div>';
-          html += '<div class="bo-order__detail">' + escHtml(o.date) + ' · ' + escHtml(o.method) + '</div>';
-          if (o.total > 0) {
-            html += '<div class="bo-order__detail">Total: $' + parseFloat(o.total).toLocaleString() + ' ' + o.currency + '</div>';
-          }
-          if (seatsStr) {
-            html += '<div class="bo-order__seats">Sillas: ' + escHtml(seatsStr) + '</div>';
-          }
-          if (zonesStr) {
-            html += '<div class="bo-order__zones">Zona: ' + escHtml(zonesStr) + '</div>';
-          }
-          html += '<div class="bo-order__actions">';
-          if (o.qr_url) {
-            html += '<button type="button" class="bo-order__qr-btn" data-order-id="' + o.id + '" data-qr="' + escHtml(o.qr_url) + '">⬇ QR</button>';
-          }
-          html += '<button type="button" class="bo-order__edit" data-order-id="' + o.id + '">Editar valor</button>';
-          if (o.checked_in) {
-            html += '<span class="bo-order__checkin-badge">✓ Ingresó</span>';
-          } else {
-            html += '<button type="button" class="bo-order__checkin" data-order-id="' + o.id + '">Marcar ingresado</button>';
-          }
-          html += '<button type="button" class="bo-order__cancel" data-order-id="' + o.id + '">Cancelar pedido</button>';
-          html += '</div>';
-          html += '</div>';
-        }
-        list.innerHTML = html;
-
-        // Bind QR view buttons — abre el modal de éxito con datos del pedido
-        list.querySelectorAll('.bo-order__qr-btn').forEach(function (btn) {
-          btn.addEventListener('click', function () {
-            var orderId = parseInt(btn.getAttribute('data-order-id'), 10);
-            var o = ordersCache[orderId];
-            if (!o || !o.qr_url) return;
-            showSuccessModal({
-              order_id:  o.id,
-              qr_url:    o.qr_url,
-              seat_qrs:  {},
-              nombre:    o.customer,
-              seats:     o.seats || [],
-              zones:     o.zones || [],
-            });
-          });
-        });
-
-        // Bind edit-value buttons
-        list.querySelectorAll('.bo-order__edit').forEach(function (btn) {
-          btn.addEventListener('click', function () {
-            var orderId = parseInt(btn.getAttribute('data-order-id'), 10);
-            openEditSaleModal(orderId);
-          });
-        });
-
-        // Bind manual check-in buttons
-        list.querySelectorAll('.bo-order__checkin').forEach(function (btn) {
-          btn.addEventListener('click', function () {
-            var orderId = parseInt(btn.getAttribute('data-order-id'), 10);
-            doManualCheckin(orderId, btn);
-          });
-        });
-
-        // Bind cancel buttons
-        list.querySelectorAll('.bo-order__cancel').forEach(function (btn) {
-          btn.addEventListener('click', function () {
-            var orderId = btn.getAttribute('data-order-id');
-            doCancelOrder(orderId, btn);
-          });
-        });
+        allOrdersList = res.data.orders || [];
+        filterOrdersList(ordersSearchQuery);
       })
       .catch(function () { /* silent */ });
+  }
+
+  function filterOrdersList(query) {
+    ordersSearchQuery = query || '';
+    var q = ordersSearchQuery.trim().toLowerCase().replace(/^#/, '');
+    if (!q) {
+      renderOrdersList(allOrdersList);
+      return;
+    }
+    var filtered = allOrdersList.filter(function (o) {
+      return String(o.id).indexOf(q) !== -1 ||
+        (o.customer || '').toLowerCase().indexOf(q) !== -1;
+    });
+    renderOrdersList(filtered);
+  }
+
+  function renderOrdersList(orders) {
+    var list = document.getElementById('bo-orders-items');
+    if (!list) return;
+
+    if (!orders.length) {
+      var emptyMsg = ordersSearchQuery.trim() ? 'Sin resultados para "' + ordersSearchQuery.trim() + '"' : 'Sin pedidos activos';
+      list.innerHTML = '<div style="padding:20px;text-align:center;color:#666;font-size:13px">' + escHtml(emptyMsg) + '</div>';
+      return;
+    }
+
+    ordersCache = {};
+    var html = '';
+    for (var i = 0; i < orders.length; i++) {
+      var o = orders[i];
+      ordersCache[o.id] = o;
+      var seatsStr = o.seats && o.seats.length ? o.seats.join(', ') : '';
+      var zonesStr = o.zones && o.zones.length ? o.zones.join(', ') : '';
+
+      html += '<div class="bo-order">';
+      html += '<div class="bo-order__header">';
+      html += '<span class="bo-order__id">#' + o.id + '</span>';
+      html += '<span class="bo-order__status">' + escHtml(o.status) + '</span>';
+      html += '</div>';
+      html += '<div class="bo-order__customer">' + escHtml(o.customer) + '</div>';
+      html += '<div class="bo-order__detail">' + escHtml(o.date) + ' · ' + escHtml(o.method) + '</div>';
+      if (o.total > 0) {
+        html += '<div class="bo-order__detail">Total: $' + parseFloat(o.total).toLocaleString() + ' ' + o.currency + '</div>';
+      }
+      if (seatsStr) {
+        html += '<div class="bo-order__seats">Sillas: ' + escHtml(seatsStr) + '</div>';
+      }
+      if (zonesStr) {
+        html += '<div class="bo-order__zones">Zona: ' + escHtml(zonesStr) + '</div>';
+      }
+      html += '<div class="bo-order__actions">';
+      if (o.qr_url) {
+        html += '<button type="button" class="bo-order__qr-btn" data-order-id="' + o.id + '" data-qr="' + escHtml(o.qr_url) + '">⬇ QR</button>';
+      }
+      html += '<button type="button" class="bo-order__edit" data-order-id="' + o.id + '">Editar valor</button>';
+      if (o.checked_in) {
+        html += '<span class="bo-order__checkin-badge">✓ Ingresó</span>';
+      } else {
+        html += '<button type="button" class="bo-order__checkin" data-order-id="' + o.id + '">Marcar ingresado</button>';
+      }
+      html += '<button type="button" class="bo-order__cancel" data-order-id="' + o.id + '">Cancelar pedido</button>';
+      html += '</div>';
+      html += '</div>';
+    }
+    list.innerHTML = html;
+
+    // Bind QR view buttons — abre el modal de éxito con datos del pedido
+    list.querySelectorAll('.bo-order__qr-btn').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var orderId = parseInt(btn.getAttribute('data-order-id'), 10);
+        var o = ordersCache[orderId];
+        if (!o || !o.qr_url) return;
+        showSuccessModal({
+          order_id:  o.id,
+          qr_url:    o.qr_url,
+          seat_qrs:  {},
+          nombre:    o.customer,
+          seats:     o.seats || [],
+          zones:     o.zones || [],
+        });
+      });
+    });
+
+    // Bind edit-value buttons
+    list.querySelectorAll('.bo-order__edit').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var orderId = parseInt(btn.getAttribute('data-order-id'), 10);
+        openEditSaleModal(orderId);
+      });
+    });
+
+    // Bind manual check-in buttons
+    list.querySelectorAll('.bo-order__checkin').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var orderId = parseInt(btn.getAttribute('data-order-id'), 10);
+        doManualCheckin(orderId, btn);
+      });
+    });
+
+    // Bind cancel buttons
+    list.querySelectorAll('.bo-order__cancel').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var orderId = btn.getAttribute('data-order-id');
+        doCancelOrder(orderId, btn);
+      });
+    });
   }
 
   function doCancelOrder(orderId, btn) {
