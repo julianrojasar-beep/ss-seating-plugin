@@ -8564,7 +8564,18 @@ function ss_export_event_leads(): void {
     $table = $wpdb->prefix . 'ss_event_leads';
 
     $rows = $wpdb->get_results( $wpdb->prepare(
-        "SELECT * FROM {$table} WHERE event_id = %d ORDER BY purchase_date DESC",
+        "SELECT order_id,
+                MIN(event_name) AS event_name,
+                MIN(buyer_name) AS buyer_name,
+                MIN(buyer_email) AS buyer_email,
+                MIN(buyer_phone) AS buyer_phone,
+                GROUP_CONCAT(DISTINCT NULLIF(zone, '') ORDER BY zone SEPARATOR ', ') AS zone,
+                GROUP_CONCAT(seat ORDER BY seat SEPARATOR ', ') AS seat,
+                SUM(ticket_qty) AS ticket_qty,
+                MIN(purchase_date) AS purchase_date
+         FROM {$table} WHERE event_id = %d
+         GROUP BY order_id
+         ORDER BY purchase_date DESC",
         $event_id
     ), ARRAY_A );
 
@@ -8626,7 +8637,19 @@ function ss_leads_handle_csv_export(): void {
     }
 
     $rows = $wpdb->get_results(
-        "SELECT * FROM {$table}{$where} ORDER BY purchase_date DESC",
+        "SELECT order_id,
+                MIN(event_id) AS event_id,
+                MIN(event_name) AS event_name,
+                MIN(buyer_name) AS buyer_name,
+                MIN(buyer_email) AS buyer_email,
+                MIN(buyer_phone) AS buyer_phone,
+                GROUP_CONCAT(DISTINCT NULLIF(zone, '') ORDER BY zone SEPARATOR ', ') AS zone,
+                GROUP_CONCAT(seat ORDER BY seat SEPARATOR ', ') AS seat,
+                SUM(ticket_qty) AS ticket_qty,
+                MIN(purchase_date) AS purchase_date
+         FROM {$table}{$where}
+         GROUP BY order_id
+         ORDER BY purchase_date DESC",
         ARRAY_A
     );
 
@@ -8640,18 +8663,17 @@ function ss_leads_handle_csv_export(): void {
     fprintf( $fp, chr( 0xEF ) . chr( 0xBB ) . chr( 0xBF ) );
 
     // Headers
-    fputcsv( $fp, array( 'ID', 'Pedido', 'Evento ID', 'Evento', 'Nombre', 'Email', 'Teléfono', 'Zona', 'Asiento', 'Cantidad', 'Fecha compra' ) );
+    fputcsv( $fp, array( 'Pedido', 'Evento ID', 'Evento', 'Nombre', 'Email', 'Teléfono', 'Zona', 'Asiento', 'Cantidad', 'Fecha compra' ) );
 
     foreach ( $rows as $row ) {
         fputcsv( $fp, array(
-            $row['id'],
             $row['order_id'],
             $row['event_id'],
             $row['event_name'],
             $row['buyer_name'],
             $row['buyer_email'],
             $row['buyer_phone'],
-            $row['zone'],
+            $row['zone'] ?: '—',
             $row['seat'] ?: '—',
             $row['ticket_qty'],
             $row['purchase_date'],
@@ -8687,10 +8709,22 @@ function ss_leads_admin_page(): void {
         $where = $wpdb->prepare( ' WHERE event_id = %d', $filter_event );
     }
 
-    $total = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table}{$where}" );
+    $total = (int) $wpdb->get_var( "SELECT COUNT(DISTINCT order_id) FROM {$table}{$where}" );
     $rows  = $wpdb->get_results(
         $wpdb->prepare(
-            "SELECT * FROM {$table}{$where} ORDER BY purchase_date DESC LIMIT %d OFFSET %d",
+            "SELECT order_id,
+                    MIN(event_id) AS event_id,
+                    MIN(event_name) AS event_name,
+                    MIN(buyer_name) AS buyer_name,
+                    MIN(buyer_email) AS buyer_email,
+                    MIN(buyer_phone) AS buyer_phone,
+                    GROUP_CONCAT(DISTINCT NULLIF(zone, '') ORDER BY zone SEPARATOR ', ') AS zone,
+                    GROUP_CONCAT(seat ORDER BY seat SEPARATOR ', ') AS seat,
+                    SUM(ticket_qty) AS ticket_qty,
+                    MIN(purchase_date) AS purchase_date
+             FROM {$table}{$where}
+             GROUP BY order_id
+             ORDER BY purchase_date DESC LIMIT %d OFFSET %d",
             $per_page,
             $offset
         ),
@@ -8723,7 +8757,7 @@ function ss_leads_admin_page(): void {
             </a>
         </h1>
 
-        <p class="description"><?php printf( __( '%s registros en total.', 'ss-seating' ), '<strong>' . number_format_i18n( $total ) . '</strong>' ); ?></p>
+        <p class="description"><?php printf( __( '%s pedidos en total.', 'ss-seating' ), '<strong>' . number_format_i18n( $total ) . '</strong>' ); ?></p>
 
         <!-- Filtro por evento -->
         <form method="get" style="margin:12px 0;">
@@ -8742,6 +8776,7 @@ function ss_leads_admin_page(): void {
         <table class="widefat striped" style="max-width:1200px;">
             <thead>
                 <tr>
+                    <th><?php esc_html_e( 'Pedido', 'ss-seating' ); ?></th>
                     <th><?php esc_html_e( 'Nombre', 'ss-seating' ); ?></th>
                     <th><?php esc_html_e( 'Email', 'ss-seating' ); ?></th>
                     <th><?php esc_html_e( 'Teléfono', 'ss-seating' ); ?></th>
@@ -8754,12 +8789,17 @@ function ss_leads_admin_page(): void {
             </thead>
             <tbody>
                 <?php if ( empty( $rows ) ) : ?>
-                    <tr><td colspan="8" style="text-align:center; padding:24px; color:#999;">
+                    <tr><td colspan="9" style="text-align:center; padding:24px; color:#999;">
                         <?php esc_html_e( 'No hay leads registrados aún.', 'ss-seating' ); ?>
                     </td></tr>
                 <?php else : ?>
                     <?php foreach ( $rows as $row ) : ?>
                         <tr>
+                            <td>
+                                <a href="<?php echo esc_url( admin_url( 'admin.php?page=wc-orders&action=edit&id=' . (int) $row['order_id'] ) ); ?>">
+                                    #<?php echo (int) $row['order_id']; ?>
+                                </a>
+                            </td>
                             <td><strong><?php echo esc_html( $row['buyer_name'] ); ?></strong></td>
                             <td><a href="mailto:<?php echo esc_attr( $row['buyer_email'] ); ?>"><?php echo esc_html( $row['buyer_email'] ); ?></a></td>
                             <td><?php echo esc_html( $row['buyer_phone'] ); ?></td>
@@ -11228,6 +11268,14 @@ function ss_boxoffice_ajax_transfer(): void {
             $redeemed[] = $dest_event_id;
         }
         SS_Loyalty::upsert( $email, array( 'redeemed_events' => wp_json_encode( $redeemed ) ) );
+    }
+
+    // 5b. Regenerar leads del pedido con el evento/zona/sillas ya actualizados —
+    // se borran y se vuelven a capturar desde el pedido (ya guardado arriba) para no
+    // duplicar la lógica de zona/silla de ss_leads_capture_from_order().
+    $wpdb->delete( $wpdb->prefix . 'ss_event_leads', array( 'order_id' => $order_id ), array( '%d' ) );
+    if ( function_exists( 'ss_leads_capture_from_order' ) ) {
+        ss_leads_capture_from_order( $order_id );
     }
 
     // 6. Reasignar registros de venta BO existentes (Cierre Contable) al evento destino,
