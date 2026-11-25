@@ -3794,6 +3794,11 @@ function ss_generate_ticket_pdf_file( int $order_id ): ?string {
 
     file_put_contents( $file, $dompdf->output() );
 
+    // Guardar ruta en meta (idempotente) — permite que la limpieza diaria de QRs
+    // (ss_qr_cleanup_run()) borre también este PDF con el mismo criterio de 7 días
+    // tras el evento, sin tener que recalcular el hash del nombre de archivo.
+    update_post_meta( $order_id, '_ss_ticket_pdf_path', $file );
+
     return $file;
 }
 
@@ -4790,6 +4795,9 @@ function ss_qr_cleanup_unschedule(): void {
 }
 
 // ── Tarea de limpieza ─────────────────────────────────────────────────────────
+// Pese al nombre (histórico), también limpia el PDF de la boleta (_ss_ticket_pdf_path)
+// con el mismo criterio de 7 días tras el evento — no se renombró para no generar
+// un diff gigante en algo que es puramente cosmético.
 
 add_action( 'ss_qr_cleanup_daily', 'ss_qr_cleanup_run' );
 
@@ -4803,8 +4811,9 @@ function ss_qr_cleanup_run(): void {
     $orders = ss_qr_cleanup_get_orders_with_qr();
 
     foreach ( $orders as $order_id ) {
-        $qr_path = get_post_meta( $order_id, '_ss_qr_path', true );
-        if ( ! $qr_path ) {
+        $qr_path  = get_post_meta( $order_id, '_ss_qr_path', true );
+        $pdf_path = get_post_meta( $order_id, '_ss_ticket_pdf_path', true );
+        if ( ! $qr_path && ! $pdf_path ) {
             continue;
         }
 
@@ -4821,14 +4830,21 @@ function ss_qr_cleanup_run(): void {
             continue; // Evento futuro o reciente: no tocar
         }
 
-        // El evento ya pasó hace más de 7 días: eliminar el archivo
-        if ( file_exists( $qr_path ) ) {
-            if ( ! @unlink( $qr_path ) ) {
+        // El evento ya pasó hace más de 7 días: eliminar el QR
+        if ( $qr_path ) {
+            if ( file_exists( $qr_path ) && ! @unlink( $qr_path ) ) {
                 if ( SS_SEATING_DEBUG ) { error_log( '[ss-seating] No se pudo eliminar QR: ' . $qr_path ); }
             }
+            delete_post_meta( $order_id, '_ss_qr_path' );
         }
-        // Eliminar la meta independientemente de si el archivo existía
-        delete_post_meta( $order_id, '_ss_qr_path' );
+
+        // Y el PDF de la boleta (mismo criterio de 7 días tras el evento)
+        if ( $pdf_path ) {
+            if ( file_exists( $pdf_path ) && ! @unlink( $pdf_path ) ) {
+                if ( SS_SEATING_DEBUG ) { error_log( '[ss-seating] No se pudo eliminar PDF de boleta: ' . $pdf_path ); }
+            }
+            delete_post_meta( $order_id, '_ss_ticket_pdf_path' );
+        }
     }
 }
 
