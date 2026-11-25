@@ -3260,11 +3260,11 @@ function ss_render_ticket_html( array $data, string $qr_url, string $seat_label,
          . esc_html( $data['organizer'] )
          . '</div>'
 
-         . '<div style="text-align:center;padding:8px;font-size:15px;font-weight:bold;border-bottom:1px dashed #ccc;">'
+         . '<div style="text-align:center;padding:8px;font-size:15px;font-weight:bold;border-bottom:1px dashed #ccc;color:#111;">'
          . esc_html( $data['event_name'] )
          . '</div>'
 
-         . '<div style="padding:20px;font-size:14px;line-height:1.7;text-align:left;display:inline-block;">'
+         . '<div style="padding:20px;font-size:14px;line-height:1.7;text-align:left;display:inline-block;color:#111;">'
          . '<b>Fecha:</b> ' . esc_html( $data['event_date'] ) . '<br>'
          . '<b>Hora:</b> ' . esc_html( $data['event_time'] ) . '<br>'
          . ( $doors_time ? '<b>Puertas abren:</b> ' . esc_html( $doors_time ) . '<br>' : '' )
@@ -3702,29 +3702,17 @@ function ss_checkin_handle_request(): void {
     exit;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// TICKET PDF — endpoint /ss-ticket-pdf/{order_id}/{token}/
-// ═══════════════════════════════════════════════════════════════════════════════
-
-add_action( 'template_redirect', 'ss_ticket_pdf_handle' );
-
-function ss_ticket_pdf_handle(): void {
-    $order_id = (int) get_query_var( 'ss_ticket_pdf' );
-    $token    = sanitize_text_field( get_query_var( 'ss_ticket_token' ) );
-    if ( ! $order_id || ! $token ) { return; }
-
-    // Validar token
-    $saved = get_post_meta( $order_id, '_ss_checkin_token', true );
-    if ( ! $saved || ! hash_equals( $saved, $token ) ) {
-        wp_die( 'Token inválido.', 'Error', array( 'response' => 403 ) );
-    }
-
+/**
+ * Arma el HTML de los tickets (uno o varios, según sillas/boletas) de un pedido.
+ * Compartido entre el endpoint de ver/imprimir y la generación del PDF adjunto al correo.
+ * Devuelve null si el pedido no corresponde a un evento.
+ */
+function ss_build_tickets_html_for_order( int $order_id ): ?string {
     $data = ss_get_event_ticket_data( $order_id );
     if ( ! $data ) {
-        wp_die( 'Este pedido no corresponde a un evento.', 'Error', array( 'response' => 404 ) );
+        return null;
     }
 
-    // Renderizar tickets
     $tickets_html = '';
     if ( ! empty( $data['seat_tokens'] ) && count( $data['seat_tokens'] ) > 1 ) {
         foreach ( $data['seat_tokens'] as $seat_id => $stk ) {
@@ -3747,49 +3735,150 @@ function ss_ticket_pdf_handle(): void {
         $tickets_html .= ss_render_ticket_html( $data, $data['qr_url'], $seat_label, false );
     }
 
-    ?>
-    <!DOCTYPE html>
-    <html lang="es">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Ticket — Pedido #<?php echo esc_html( $order_id ); ?></title>
-        <style>
-            * { margin: 0; padding: 0; box-sizing: border-box; }
-            body { background: #f5f5f5; font-family: Arial, sans-serif; }
-            .ss-pdf-wrap { max-width: 500px; margin: 0 auto; padding: 20px; }
-            .ss-pdf-actions {
-                text-align: center; padding: 20px 0;
-            }
-            .ss-pdf-actions button {
-                background: #111; color: #fff; border: none; padding: 12px 32px;
-                border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer;
-            }
-            .ss-pdf-actions button:hover { background: #333; }
-            @media print {
-                body { background: #fff; }
-                .ss-pdf-actions { display: none; }
-                .ss-pdf-wrap { padding: 0; max-width: 100%; }
-                div[style*="box-shadow"] { box-shadow: none !important; }
-            }
-        </style>
-    </head>
-    <body>
-        <div class="ss-pdf-wrap">
-            <div class="ss-pdf-actions">
-                <button onclick="window.print()">Imprimir / Guardar como PDF</button>
-            </div>
-            <?php echo $tickets_html; ?>
-        </div>
-        <script>
-            // Auto-trigger print on load for direct download experience
-            window.addEventListener('load', function() {
-                setTimeout(function() { window.print(); }, 600);
-            });
-        </script>
-    </body>
-    </html>
-    <?php
+    return $tickets_html;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TICKET PDF ADJUNTO EN CORREOS — generado con Dompdf (lib/dompdf/)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Genera el PDF del ticket de un pedido (mismo HTML que ya ve el cliente en
+ * /ss-ticket-pdf/) para adjuntarlo en los correos. Se regenera en cada envío —
+ * el archivo es barato de producir y así nunca queda desactualizado si las sillas
+ * cambiaron (traslado/corrección desde Box Office).
+ *
+ * @return string|null Ruta absoluta del PDF, o null si el pedido no es de evento.
+ */
+function ss_generate_ticket_pdf_file( int $order_id ): ?string {
+    $tickets_html = ss_build_tickets_html_for_order( $order_id );
+    if ( $tickets_html === null ) {
+        return null;
+    }
+
+    $upload = wp_upload_dir();
+    $dir    = trailingslashit( $upload['basedir'] ) . 'ss-tickets-pdf';
+    // Nombre impredecible, igual que los QR, para evitar enumeración por order_id
+    // (este PDF no tiene endpoint propio, pero vive en uploads/ servido como estático).
+    $name_hash = substr( hash( 'sha256', $order_id . '|pdf|' . wp_salt( 'auth' ) ), 0, 16 );
+    $file      = $dir . '/order-' . $order_id . '-' . $name_hash . '.pdf';
+
+    if ( ! file_exists( $dir ) ) {
+        wp_mkdir_p( $dir );
+        file_put_contents( $dir . '/index.php', '<?php // Silence is golden.' );
+        $htaccess = $dir . '/.htaccess';
+        if ( ! file_exists( $htaccess ) ) {
+            file_put_contents( $htaccess, "Options -Indexes\n" );
+        }
+    }
+
+    // Las imágenes de QR viven en el mismo uploads/ — convertir la URL pública a ruta
+    // local para que Dompdf las lea directo del disco, sin pedirlas por HTTP.
+    $tickets_html = str_replace( $upload['baseurl'], $upload['basedir'], $tickets_html );
+
+    if ( ! class_exists( 'Dompdf\\Dompdf' ) ) {
+        require_once plugin_dir_path( __FILE__ ) . 'lib/dompdf/autoload.inc.php';
+    }
+
+    $options = new \Dompdf\Options();
+    $options->set( 'isRemoteEnabled', false );
+    $options->set( 'chroot', $upload['basedir'] );
+
+    $dompdf = new \Dompdf\Dompdf( $options );
+    $dompdf->loadHtml(
+        '<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>' . $tickets_html . '</body></html>',
+        'UTF-8'
+    );
+    $dompdf->setPaper( 'letter', 'portrait' );
+    $dompdf->render();
+
+    file_put_contents( $file, $dompdf->output() );
+
+    // Guardar ruta en meta (idempotente) — permite que la limpieza diaria de QRs
+    // (ss_qr_cleanup_run()) borre también este PDF con el mismo criterio de 7 días
+    // tras el evento, sin tener que recalcular el hash del nombre de archivo.
+    update_post_meta( $order_id, '_ss_ticket_pdf_path', $file );
+
+    return $file;
+}
+
+add_filter( 'woocommerce_email_attachments', 'ss_attach_ticket_pdf_to_email', 10, 3 );
+
+function ss_attach_ticket_pdf_to_email( $attachments, $email_id, $order ) {
+    // 'customer_processing_order' incluido porque Box Office dispara ese email a mano
+    // (ss_boxoffice_process_sale()) aunque el pedido ya quede 'completed' — el checkout
+    // web nunca pasa por 'processing' en pedidos de evento, así que esto no le afecta.
+    if ( ! in_array( $email_id, array( 'customer_completed_order', 'customer_note', 'customer_processing_order' ), true ) ) {
+        return $attachments;
+    }
+    if ( ! is_a( $order, 'WC_Order' ) ) {
+        return $attachments;
+    }
+    if ( ! $order->has_status( array( 'processing', 'completed' ) ) ) {
+        return $attachments;
+    }
+    if ( ! ss_order_has_event_items( $order->get_id() ) ) {
+        return $attachments;
+    }
+
+    $pdf_path = ss_generate_ticket_pdf_file( $order->get_id() );
+    if ( $pdf_path ) {
+        $attachments[] = $pdf_path;
+    }
+
+    return $attachments;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TICKET PDF — endpoint /ss-ticket-pdf/{order_id}/{token}/
+// ═══════════════════════════════════════════════════════════════════════════════
+
+add_action( 'template_redirect', 'ss_ticket_pdf_handle' );
+
+function ss_ticket_pdf_handle(): void {
+    $order_id = (int) get_query_var( 'ss_ticket_pdf' );
+    $token    = sanitize_text_field( get_query_var( 'ss_ticket_token' ) );
+    if ( ! $order_id || ! $token ) { return; }
+
+    // Validar token
+    $saved = get_post_meta( $order_id, '_ss_checkin_token', true );
+    if ( ! $saved || ! hash_equals( $saved, $token ) ) {
+        wp_die( 'Token inválido.', 'Error', array( 'response' => 403 ) );
+    }
+
+    // El pedido pudo haberse cancelado después de generar el token (ej. venta duplicada
+    // de silla detectada por el seat guard) — no servir una boleta con apariencia válida
+    // para un pedido que ya no está confirmado.
+    $order_check = wc_get_order( $order_id );
+    if ( ! $order_check || ! $order_check->has_status( array( 'processing', 'completed' ) ) ) {
+        wp_die(
+            'Este pedido no está confirmado o fue cancelado — la boleta ya no es válida. '
+            . 'Si crees que esto es un error, contáctanos.',
+            'Pedido no confirmado',
+            array( 'response' => 410 )
+        );
+    }
+
+    // Antes esto mostraba una página HTML y disparaba window.print() para que el
+    // navegador "imprimiera como PDF" — poco confiable (a veces el QR no alcanzaba a
+    // cargar antes de la captura de impresión). Ahora sirve directo el PDF real
+    // generado con Dompdf (el mismo que se adjunta en los correos).
+    $pdf_path = ss_generate_ticket_pdf_file( $order_id );
+    if ( ! $pdf_path || ! file_exists( $pdf_path ) ) {
+        wp_die( 'Este pedido no corresponde a un evento.', 'Error', array( 'response' => 404 ) );
+    }
+
+    // Nombre de descarga con el evento, no el número de pedido — evita exponer de
+    // paso cuántos pedidos lleva el sitio con solo mirar el nombre del archivo guardado.
+    $ticket_data  = ss_get_event_ticket_data( $order_id );
+    $event_name   = $ticket_data['event_name'] ?? '';
+    $download_name = sanitize_file_name( 'boleta-' . ( $event_name ?: 'evento' ) ) . '.pdf';
+
+    nocache_headers();
+    header( 'Content-Type: application/pdf' );
+    header( 'Content-Disposition: attachment; filename="' . $download_name . '"' );
+    header( 'Content-Length: ' . filesize( $pdf_path ) );
+    readfile( $pdf_path );
     exit;
 }
 
@@ -4691,6 +4780,9 @@ function ss_qr_cleanup_unschedule(): void {
 }
 
 // ── Tarea de limpieza ─────────────────────────────────────────────────────────
+// Pese al nombre (histórico), también limpia el PDF de la boleta (_ss_ticket_pdf_path)
+// con el mismo criterio de 7 días tras el evento — no se renombró para no generar
+// un diff gigante en algo que es puramente cosmético.
 
 add_action( 'ss_qr_cleanup_daily', 'ss_qr_cleanup_run' );
 
@@ -4704,8 +4796,9 @@ function ss_qr_cleanup_run(): void {
     $orders = ss_qr_cleanup_get_orders_with_qr();
 
     foreach ( $orders as $order_id ) {
-        $qr_path = get_post_meta( $order_id, '_ss_qr_path', true );
-        if ( ! $qr_path ) {
+        $qr_path  = get_post_meta( $order_id, '_ss_qr_path', true );
+        $pdf_path = get_post_meta( $order_id, '_ss_ticket_pdf_path', true );
+        if ( ! $qr_path && ! $pdf_path ) {
             continue;
         }
 
@@ -4722,14 +4815,21 @@ function ss_qr_cleanup_run(): void {
             continue; // Evento futuro o reciente: no tocar
         }
 
-        // El evento ya pasó hace más de 7 días: eliminar el archivo
-        if ( file_exists( $qr_path ) ) {
-            if ( ! @unlink( $qr_path ) ) {
+        // El evento ya pasó hace más de 7 días: eliminar el QR
+        if ( $qr_path ) {
+            if ( file_exists( $qr_path ) && ! @unlink( $qr_path ) ) {
                 if ( SS_SEATING_DEBUG ) { error_log( '[ss-seating] No se pudo eliminar QR: ' . $qr_path ); }
             }
+            delete_post_meta( $order_id, '_ss_qr_path' );
         }
-        // Eliminar la meta independientemente de si el archivo existía
-        delete_post_meta( $order_id, '_ss_qr_path' );
+
+        // Y el PDF de la boleta (mismo criterio de 7 días tras el evento)
+        if ( $pdf_path ) {
+            if ( file_exists( $pdf_path ) && ! @unlink( $pdf_path ) ) {
+                if ( SS_SEATING_DEBUG ) { error_log( '[ss-seating] No se pudo eliminar PDF de boleta: ' . $pdf_path ); }
+            }
+            delete_post_meta( $order_id, '_ss_ticket_pdf_path' );
+        }
     }
 }
 
