@@ -1996,15 +1996,15 @@ function ss_seating_add_cart_item_data($cart_item_data, $product_id, $variation_
     }
     $call_index = $GLOBALS['_ss_cart_item_call_index'];
 
-    // Always capture event ID first (needed for QR, check-in, fee in all sale modes)
+    // Capturar el evento vinculado SIEMPRE desde el meta del producto, nunca desde $_POST:
+    // si en la misma página del evento hay un producto relacionado (ej. un producto normal
+    // en un bloque de "también te puede interesar"), su propio add-to-cart comparte el mismo
+    // request y $_POST['ss_event_id']/mpwem_post_id pueden seguir presentes sin corresponder
+    // a ESTE producto — eso hacía que compras de productos normales mostraran QR de ingreso.
+    // Cada evento ya tiene su producto oculto propio con '_ss_event_id' seteado al crearse
+    // (class-ss-event-cpt.php), así que el meta del producto es fuente de verdad suficiente.
     $event_id = 0;
-    if ( ! empty( $_POST['mpwem_post_id'] ) ) {
-        $event_id = (int) $_POST['mpwem_post_id'];
-    } elseif ( ! empty( $_POST['ss_event_id'] ) ) {
-        $event_id = (int) $_POST['ss_event_id'];
-    }
-    // Fallback: si el producto es un producto oculto vinculado a un ss_event
-    if ( ! $event_id && $product_id > 0 ) {
+    if ( $product_id > 0 ) {
         $linked = (int) get_post_meta( $product_id, '_ss_event_id', true );
         if ( $linked > 0 ) {
             $event_id = $linked;
