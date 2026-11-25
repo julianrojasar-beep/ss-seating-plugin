@@ -3868,9 +3868,15 @@ function ss_ticket_pdf_handle(): void {
         wp_die( 'Este pedido no corresponde a un evento.', 'Error', array( 'response' => 404 ) );
     }
 
+    // Nombre de descarga con el evento, no el número de pedido — evita exponer de
+    // paso cuántos pedidos lleva el sitio con solo mirar el nombre del archivo guardado.
+    $ticket_data  = ss_get_event_ticket_data( $order_id );
+    $event_name   = $ticket_data['event_name'] ?? '';
+    $download_name = sanitize_file_name( 'boleta-' . ( $event_name ?: 'evento' ) ) . '.pdf';
+
     nocache_headers();
     header( 'Content-Type: application/pdf' );
-    header( 'Content-Disposition: attachment; filename="ticket-pedido-' . $order_id . '.pdf"' );
+    header( 'Content-Disposition: attachment; filename="' . $download_name . '"' );
     header( 'Content-Length: ' . filesize( $pdf_path ) );
     readfile( $pdf_path );
     exit;
