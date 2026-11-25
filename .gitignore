@@ -17,6 +17,10 @@ desktop.ini
 # Dependencias (si algún día se usan)
 node_modules/
 vendor/
+# Excepción: dompdf se distribuye como librería vendorizada dentro de lib/ (igual
+# que phpqrcode/plugin-update-checker) — su vendor/ interno SÍ debe ir en el repo.
+!lib/dompdf/vendor/
+!lib/dompdf/vendor/**
 
 # Archivos de entorno local
 .env

@@ -3702,29 +3702,17 @@ function ss_checkin_handle_request(): void {
     exit;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// TICKET PDF — endpoint /ss-ticket-pdf/{order_id}/{token}/
-// ═══════════════════════════════════════════════════════════════════════════════
-
-add_action( 'template_redirect', 'ss_ticket_pdf_handle' );
-
-function ss_ticket_pdf_handle(): void {
-    $order_id = (int) get_query_var( 'ss_ticket_pdf' );
-    $token    = sanitize_text_field( get_query_var( 'ss_ticket_token' ) );
-    if ( ! $order_id || ! $token ) { return; }
-
-    // Validar token
-    $saved = get_post_meta( $order_id, '_ss_checkin_token', true );
-    if ( ! $saved || ! hash_equals( $saved, $token ) ) {
-        wp_die( 'Token inválido.', 'Error', array( 'response' => 403 ) );
-    }
-
+/**
+ * Arma el HTML de los tickets (uno o varios, según sillas/boletas) de un pedido.
+ * Compartido entre el endpoint de ver/imprimir y la generación del PDF adjunto al correo.
+ * Devuelve null si el pedido no corresponde a un evento.
+ */
+function ss_build_tickets_html_for_order( int $order_id ): ?string {
     $data = ss_get_event_ticket_data( $order_id );
     if ( ! $data ) {
-        wp_die( 'Este pedido no corresponde a un evento.', 'Error', array( 'response' => 404 ) );
+        return null;
     }
 
-    // Renderizar tickets
     $tickets_html = '';
     if ( ! empty( $data['seat_tokens'] ) && count( $data['seat_tokens'] ) > 1 ) {
         foreach ( $data['seat_tokens'] as $seat_id => $stk ) {
@@ -3745,6 +3733,114 @@ function ss_ticket_pdf_handle(): void {
     } else {
         $seat_label    = ! empty( $data['seats'] ) ? implode( ', ', $data['seats'] ) : '—';
         $tickets_html .= ss_render_ticket_html( $data, $data['qr_url'], $seat_label, false );
+    }
+
+    return $tickets_html;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TICKET PDF ADJUNTO EN CORREOS — generado con Dompdf (lib/dompdf/)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Genera el PDF del ticket de un pedido (mismo HTML que ya ve el cliente en
+ * /ss-ticket-pdf/) para adjuntarlo en los correos. Se regenera en cada envío —
+ * el archivo es barato de producir y así nunca queda desactualizado si las sillas
+ * cambiaron (traslado/corrección desde Box Office).
+ *
+ * @return string|null Ruta absoluta del PDF, o null si el pedido no es de evento.
+ */
+function ss_generate_ticket_pdf_file( int $order_id ): ?string {
+    $tickets_html = ss_build_tickets_html_for_order( $order_id );
+    if ( $tickets_html === null ) {
+        return null;
+    }
+
+    $upload = wp_upload_dir();
+    $dir    = trailingslashit( $upload['basedir'] ) . 'ss-tickets-pdf';
+    // Nombre impredecible, igual que los QR, para evitar enumeración por order_id
+    // (este PDF no tiene endpoint propio, pero vive en uploads/ servido como estático).
+    $name_hash = substr( hash( 'sha256', $order_id . '|pdf|' . wp_salt( 'auth' ) ), 0, 16 );
+    $file      = $dir . '/order-' . $order_id . '-' . $name_hash . '.pdf';
+
+    if ( ! file_exists( $dir ) ) {
+        wp_mkdir_p( $dir );
+        file_put_contents( $dir . '/index.php', '<?php // Silence is golden.' );
+        $htaccess = $dir . '/.htaccess';
+        if ( ! file_exists( $htaccess ) ) {
+            file_put_contents( $htaccess, "Options -Indexes\n" );
+        }
+    }
+
+    // Las imágenes de QR viven en el mismo uploads/ — convertir la URL pública a ruta
+    // local para que Dompdf las lea directo del disco, sin pedirlas por HTTP.
+    $tickets_html = str_replace( $upload['baseurl'], $upload['basedir'], $tickets_html );
+
+    if ( ! class_exists( 'Dompdf\\Dompdf' ) ) {
+        require_once plugin_dir_path( __FILE__ ) . 'lib/dompdf/autoload.inc.php';
+    }
+
+    $options = new \Dompdf\Options();
+    $options->set( 'isRemoteEnabled', false );
+    $options->set( 'chroot', $upload['basedir'] );
+
+    $dompdf = new \Dompdf\Dompdf( $options );
+    $dompdf->loadHtml(
+        '<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>' . $tickets_html . '</body></html>',
+        'UTF-8'
+    );
+    $dompdf->setPaper( 'letter', 'portrait' );
+    $dompdf->render();
+
+    file_put_contents( $file, $dompdf->output() );
+
+    return $file;
+}
+
+add_filter( 'woocommerce_email_attachments', 'ss_attach_ticket_pdf_to_email', 10, 3 );
+
+function ss_attach_ticket_pdf_to_email( $attachments, $email_id, $order ) {
+    if ( ! in_array( $email_id, array( 'customer_completed_order', 'customer_note' ), true ) ) {
+        return $attachments;
+    }
+    if ( ! is_a( $order, 'WC_Order' ) ) {
+        return $attachments;
+    }
+    if ( ! $order->has_status( array( 'processing', 'completed' ) ) ) {
+        return $attachments;
+    }
+    if ( ! ss_order_has_event_items( $order->get_id() ) ) {
+        return $attachments;
+    }
+
+    $pdf_path = ss_generate_ticket_pdf_file( $order->get_id() );
+    if ( $pdf_path ) {
+        $attachments[] = $pdf_path;
+    }
+
+    return $attachments;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TICKET PDF — endpoint /ss-ticket-pdf/{order_id}/{token}/
+// ═══════════════════════════════════════════════════════════════════════════════
+
+add_action( 'template_redirect', 'ss_ticket_pdf_handle' );
+
+function ss_ticket_pdf_handle(): void {
+    $order_id = (int) get_query_var( 'ss_ticket_pdf' );
+    $token    = sanitize_text_field( get_query_var( 'ss_ticket_token' ) );
+    if ( ! $order_id || ! $token ) { return; }
+
+    // Validar token
+    $saved = get_post_meta( $order_id, '_ss_checkin_token', true );
+    if ( ! $saved || ! hash_equals( $saved, $token ) ) {
+        wp_die( 'Token inválido.', 'Error', array( 'response' => 403 ) );
+    }
+
+    $tickets_html = ss_build_tickets_html_for_order( $order_id );
+    if ( $tickets_html === null ) {
+        wp_die( 'Este pedido no corresponde a un evento.', 'Error', array( 'response' => 404 ) );
     }
 
     ?>
