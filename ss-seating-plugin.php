@@ -3064,6 +3064,32 @@ body.woocommerce-order-received address {
     background: transparent !important;
     border: none !important;
 }
+/* Los títulos de sección (WooCommerce los pinta con fondo casi blanco por defecto)
+   quedaban con texto blanco sobre fondo blanco — invisibles en el tema oscuro. */
+body.woocommerce-order-received .woocommerce-order-details__title,
+body.woocommerce-order-received .woocommerce-column__title {
+    background: #111 !important;
+    color: #fff !important;
+}
+</style>' . "\n";
+}
+
+add_action( 'wp_head', 'ss_wc_blocks_dark_theme_fixes' );
+
+/**
+ * El badge de cantidad del resumen de pedido en WooCommerce Blocks (checkout y
+ * carrito) viene con el mismo color de fondo y de texto por defecto — invisible
+ * en el tema oscuro del sitio. A diferencia de ss_thankyou_inject_styles() (solo
+ * la página de gracias), este selector aparece en varias pantallas de Blocks,
+ * así que se imprime en todo el frontend — es un selector único y específico,
+ * no afecta nada si no está presente en la página.
+ */
+function ss_wc_blocks_dark_theme_fixes(): void {
+    echo '<style>
+.wc-block-components-order-summary-item__quantity {
+    background: #111 !important;
+    color: #fff !important;
+}
 </style>' . "\n";
 }
 
