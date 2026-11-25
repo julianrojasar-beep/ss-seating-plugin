@@ -3260,11 +3260,11 @@ function ss_render_ticket_html( array $data, string $qr_url, string $seat_label,
          . esc_html( $data['organizer'] )
          . '</div>'
 
-         . '<div style="text-align:center;padding:8px;font-size:15px;font-weight:bold;border-bottom:1px dashed #ccc;">'
+         . '<div style="text-align:center;padding:8px;font-size:15px;font-weight:bold;border-bottom:1px dashed #ccc;color:#111;">'
          . esc_html( $data['event_name'] )
          . '</div>'
 
-         . '<div style="padding:20px;font-size:14px;line-height:1.7;text-align:left;display:inline-block;">'
+         . '<div style="padding:20px;font-size:14px;line-height:1.7;text-align:left;display:inline-block;color:#111;">'
          . '<b>Fecha:</b> ' . esc_html( $data['event_date'] ) . '<br>'
          . '<b>Hora:</b> ' . esc_html( $data['event_time'] ) . '<br>'
          . ( $doors_time ? '<b>Puertas abren:</b> ' . esc_html( $doors_time ) . '<br>' : '' )
@@ -3846,54 +3846,33 @@ function ss_ticket_pdf_handle(): void {
         wp_die( 'Token inválido.', 'Error', array( 'response' => 403 ) );
     }
 
-    $tickets_html = ss_build_tickets_html_for_order( $order_id );
-    if ( $tickets_html === null ) {
+    // El pedido pudo haberse cancelado después de generar el token (ej. venta duplicada
+    // de silla detectada por el seat guard) — no servir una boleta con apariencia válida
+    // para un pedido que ya no está confirmado.
+    $order_check = wc_get_order( $order_id );
+    if ( ! $order_check || ! $order_check->has_status( array( 'processing', 'completed' ) ) ) {
+        wp_die(
+            'Este pedido no está confirmado o fue cancelado — la boleta ya no es válida. '
+            . 'Si crees que esto es un error, contáctanos.',
+            'Pedido no confirmado',
+            array( 'response' => 410 )
+        );
+    }
+
+    // Antes esto mostraba una página HTML y disparaba window.print() para que el
+    // navegador "imprimiera como PDF" — poco confiable (a veces el QR no alcanzaba a
+    // cargar antes de la captura de impresión). Ahora sirve directo el PDF real
+    // generado con Dompdf (el mismo que se adjunta en los correos).
+    $pdf_path = ss_generate_ticket_pdf_file( $order_id );
+    if ( ! $pdf_path || ! file_exists( $pdf_path ) ) {
         wp_die( 'Este pedido no corresponde a un evento.', 'Error', array( 'response' => 404 ) );
     }
 
-    ?>
-    <!DOCTYPE html>
-    <html lang="es">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Ticket — Pedido #<?php echo esc_html( $order_id ); ?></title>
-        <style>
-            * { margin: 0; padding: 0; box-sizing: border-box; }
-            body { background: #f5f5f5; font-family: Arial, sans-serif; }
-            .ss-pdf-wrap { max-width: 500px; margin: 0 auto; padding: 20px; }
-            .ss-pdf-actions {
-                text-align: center; padding: 20px 0;
-            }
-            .ss-pdf-actions button {
-                background: #111; color: #fff; border: none; padding: 12px 32px;
-                border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer;
-            }
-            .ss-pdf-actions button:hover { background: #333; }
-            @media print {
-                body { background: #fff; }
-                .ss-pdf-actions { display: none; }
-                .ss-pdf-wrap { padding: 0; max-width: 100%; }
-                div[style*="box-shadow"] { box-shadow: none !important; }
-            }
-        </style>
-    </head>
-    <body>
-        <div class="ss-pdf-wrap">
-            <div class="ss-pdf-actions">
-                <button onclick="window.print()">Imprimir / Guardar como PDF</button>
-            </div>
-            <?php echo $tickets_html; ?>
-        </div>
-        <script>
-            // Auto-trigger print on load for direct download experience
-            window.addEventListener('load', function() {
-                setTimeout(function() { window.print(); }, 600);
-            });
-        </script>
-    </body>
-    </html>
-    <?php
+    nocache_headers();
+    header( 'Content-Type: application/pdf' );
+    header( 'Content-Disposition: attachment; filename="ticket-pedido-' . $order_id . '.pdf"' );
+    header( 'Content-Length: ' . filesize( $pdf_path ) );
+    readfile( $pdf_path );
     exit;
 }
 
