@@ -3800,7 +3800,10 @@ function ss_generate_ticket_pdf_file( int $order_id ): ?string {
 add_filter( 'woocommerce_email_attachments', 'ss_attach_ticket_pdf_to_email', 10, 3 );
 
 function ss_attach_ticket_pdf_to_email( $attachments, $email_id, $order ) {
-    if ( ! in_array( $email_id, array( 'customer_completed_order', 'customer_note' ), true ) ) {
+    // 'customer_processing_order' incluido porque Box Office dispara ese email a mano
+    // (ss_boxoffice_process_sale()) aunque el pedido ya quede 'completed' — el checkout
+    // web nunca pasa por 'processing' en pedidos de evento, así que esto no le afecta.
+    if ( ! in_array( $email_id, array( 'customer_completed_order', 'customer_note', 'customer_processing_order' ), true ) ) {
         return $attachments;
     }
     if ( ! is_a( $order, 'WC_Order' ) ) {
